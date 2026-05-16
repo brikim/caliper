@@ -9,8 +9,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
-#include <sstream>
 #include <nlohmann/json.hpp>
+#include <sstream>
 
 using json = nlohmann::json;
 
@@ -30,7 +30,8 @@ FFmpegRunner::~FFmpegRunner()
 
 bool FFmpegRunner::Start(const std::string& command)
 {
-   if (m_running) return false;
+   if (m_running)
+      return false;
 
    if (m_worker.joinable())
    {
@@ -151,7 +152,9 @@ void FFmpegRunner::RunThread(std::string command)
    DWORD bytesRead;
    std::string accumulated;
 
-   while (ReadFile(hReadPipe, buffer.data(), buffer.size() - 1, &bytesRead, NULL) && bytesRead > 0)
+   while (
+       ReadFile(hReadPipe, buffer.data(), buffer.size() - 1, &bytesRead, NULL) &&
+       bytesRead > 0)
    {
       if (m_stopRequested)
       {
@@ -168,11 +171,15 @@ void FFmpegRunner::RunThread(std::string command)
          size_t pos_r = accumulated.find('\r');
          size_t pos = std::string::npos;
 
-         if (pos_n != std::string::npos && pos_r != std::string::npos) pos = (pos_n < pos_r) ? pos_n : pos_r;
-         else if (pos_n != std::string::npos) pos = pos_n;
-         else if (pos_r != std::string::npos) pos = pos_r;
+         if (pos_n != std::string::npos && pos_r != std::string::npos)
+            pos = (pos_n < pos_r) ? pos_n : pos_r;
+         else if (pos_n != std::string::npos)
+            pos = pos_n;
+         else if (pos_r != std::string::npos)
+            pos = pos_r;
 
-         if (pos == std::string::npos) break;
+         if (pos == std::string::npos)
+            break;
 
          std::string line = accumulated.substr(0, pos);
          accumulated.erase(0, pos + 1);
@@ -211,8 +218,10 @@ void FFmpegRunner::RunThread(std::string command)
       }
 
       std::string line(buffer);
-      if (!line.empty() && line.back() == '\n') line.pop_back();
-      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (!line.empty() && line.back() == '\n')
+         line.pop_back();
+      if (!line.empty() && line.back() == '\r')
+         line.pop_back();
 
       {
          std::lock_guard<std::mutex> lock(m_logMutex);
@@ -228,8 +237,10 @@ void FFmpegRunner::RunThread(std::string command)
 
 void FFmpegRunner::ParseLogLine(const std::string& line)
 {
-   // 1. Parse progress: "frame=  123 fps= 30 q=... size=... time=00:00:04.10 bitrate=123.4kbits/s speed=1.2x"
-   if (line.find("frame=") != std::string::npos && line.find("time=") != std::string::npos)
+   // 1. Parse progress: "frame=  123 fps= 30 q=... size=... time=00:00:04.10
+   // bitrate=123.4kbits/s speed=1.2x"
+   if (line.find("frame=") != std::string::npos &&
+       line.find("time=") != std::string::npos)
    {
       std::lock_guard<std::mutex> lock(m_progressMutex);
 
@@ -247,7 +258,8 @@ void FFmpegRunner::ParseLogLine(const std::string& line)
       {
          m_progress.time = match[1].str();
       }
-      if (std::regex_search(line, match, std::regex(R"(bitrate=\s*([\d.]+)kbits/s)")))
+      if (std::regex_search(line, match,
+                            std::regex(R"(bitrate=\s*([\d.]+)kbits/s)")))
       {
          m_progress.bitrate = std::stof(match[1].str());
       }
@@ -261,7 +273,8 @@ void FFmpegRunner::ParseLogLine(const std::string& line)
    if (line.find("VMAF score:") != std::string::npos)
    {
       std::smatch match;
-      if (std::regex_search(line, match, std::regex(R"(VMAF score:\s*([\d.]+))")))
+      if (std::regex_search(line, match,
+                            std::regex(R"(VMAF score:\s*([\d.]+))")))
       {
          m_vmafScore = std::stof(match[1].str());
       }
@@ -273,10 +286,13 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
    VideoMetadata meta;
 
    // Build ffprobe command to output json
-   std::string cmd = "ffprobe -v quiet -print_format json -show_format -show_streams \"" + filepath + "\"";
+   std::string cmd =
+      "ffprobe -v quiet -print_format json -show_format -show_streams \"" +
+      filepath + "\"";
 
    FILE* pipe = popen(cmd.c_str(), "r");
-   if (!pipe) return meta;
+   if (!pipe)
+      return meta;
 
    std::string result = "";
    std::array<char, 128> buffer;
@@ -286,7 +302,8 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
    }
    pclose(pipe);
 
-   if (result.empty()) return meta;
+   if (result.empty())
+      return meta;
 
    try
    {
@@ -305,9 +322,12 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
                if (bpp_str == "0")
                {
                   // Fallback: some codecs don't report bits_per_raw_sample directly
-                  if (meta.pix_fmt.find("10") != std::string::npos) meta.bit_depth = 10;
-                  else if (meta.pix_fmt.find("12") != std::string::npos) meta.bit_depth = 12;
-                  else meta.bit_depth = 8;
+                  if (meta.pix_fmt.find("10") != std::string::npos)
+                     meta.bit_depth = 10;
+                  else if (meta.pix_fmt.find("12") != std::string::npos)
+                     meta.bit_depth = 12;
+                  else
+                     meta.bit_depth = 8;
                }
                else
                {
@@ -322,7 +342,8 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
                {
                   float num = std::stof(r_frame_rate.substr(0, slash_pos));
                   float den = std::stof(r_frame_rate.substr(slash_pos + 1));
-                  if (den != 0.0f) meta.framerate = num / den;
+                  if (den != 0.0f)
+                     meta.framerate = num / den;
                }
                meta.valid = true;
                break;
@@ -338,7 +359,8 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
    }
    catch (const std::exception& e)
    {
-      std::cerr << "JSON parse error in ffprobe output: " << e.what() << std::endl;
+      std::cerr << "JSON parse error in ffprobe output: " << e.what()
+         << std::endl;
    }
 
    return meta;

@@ -32,7 +32,7 @@ int main(int argc, char** argv)
    }
 #endif
 
-   WindowManager window(1280, 1175, "Caliper - FFmpeg Benchmark");
+   WindowManager window(1280, 1100, "Caliper - FFmpeg Benchmark");
 
    if (!window.Initialize())
    {

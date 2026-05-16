@@ -38,7 +38,5 @@ private:
    int m_maxConcurrentJobs = 1;
    int m_selectedJobId = -1;
 
-   // Segment Settings
-   int m_segmentCount = 4;
-   float m_segmentDuration = 60.0f;
+
 };
