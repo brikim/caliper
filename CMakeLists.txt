@@ -81,6 +81,8 @@ set(SOURCES
     src/main.cpp
     src/ui_manager.cpp
     src/ffmpeg_runner.cpp
+    src/job_manager.cpp
+    src/window_manager.cpp
 )
 
 if(WIN32)
@@ -108,3 +110,10 @@ target_link_libraries(Caliper PRIVATE
 if (MSVC)
     target_compile_definitions(Caliper PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
+
+add_custom_command(TARGET Caliper POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+        "$<TARGET_FILE_DIR:Caliper>/assets"
+    COMMENT "Copying assets to build directory..."
+)

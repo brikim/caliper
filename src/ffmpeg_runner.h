@@ -1,69 +1,72 @@
 #pragma once
 
-#include <string>
-#include <vector>
-#include <thread>
 #include <atomic>
 #include <mutex>
 #include <queue>
+#include <string>
+#include <thread>
+#include <vector>
 
-struct FFmpegProgress {
-    int frame = 0;
-    float fps = 0.0f;
-    float bitrate = 0.0f; // in kbps
-    float speed = 0.0f;
-    std::string time;
+struct FFmpegProgress
+{
+   int frame = 0;
+   float fps = 0.0f;
+   float bitrate = 0.0f; // in kbps
+   float speed = 0.0f;
+   std::string time;
 };
 
-struct VideoMetadata {
-    std::string codec;
-    std::string pix_fmt;
-    int bit_depth = 0;
-    int width = 0;
-    int height = 0;
-    float duration = 0.0f;
-    float framerate = 0.0f;
-    bool valid = false;
+struct VideoMetadata
+{
+   std::string codec;
+   std::string pix_fmt;
+   int bit_depth = 0;
+   int width = 0;
+   int height = 0;
+   float duration = 0.0f;
+   float framerate = 0.0f;
+   bool valid = false;
 };
 
-class FFmpegRunner {
+class FFmpegRunner
+{
 public:
-    FFmpegRunner();
-    ~FFmpegRunner();
+   FFmpegRunner();
+   ~FFmpegRunner();
 
-    // Start an ffmpeg command asynchronously
-    bool Start(const std::string& command);
-    
-    // Attempt to stop the process
-    void Stop();
+   // Start an ffmpeg command asynchronously
+   bool Start(const std::string& command);
 
-    // Check if the worker thread is running
-    bool IsRunning() const;
+   // Attempt to stop the process
+   void Stop();
 
-    // Retrieve unread log lines
-    std::vector<std::string> GetNewLogs();
+   // Check if the worker thread is running
+   bool IsRunning() const;
 
-    // Get the latest parsed progress
-    FFmpegProgress GetProgress() const;
-    
-    // Get final VMAF score if calculated (-1.0f if not yet found)
-    float GetVMAFScore() const;
+   // Retrieve unread log lines
+   std::vector<std::string> GetNewLogs();
 
-    // Fetch video metadata synchronously using ffprobe
-    static VideoMetadata GetMetadata(const std::string& filepath);
+   // Get the latest parsed progress
+   FFmpegProgress GetProgress() const;
+
+   // Get final VMAF score if calculated (-1.0f if not yet found)
+   float GetVMAFScore() const;
+
+   // Fetch video metadata synchronously using ffprobe
+   static VideoMetadata GetMetadata(const std::string& filepath);
 
 private:
-    void RunThread(std::string command);
-    void ParseLogLine(const std::string& line);
+   void RunThread(std::string command);
+   void ParseLogLine(const std::string& line);
 
-    std::thread m_worker;
-    std::atomic<bool> m_running{false};
-    std::atomic<bool> m_stopRequested{false};
+   std::thread m_worker;
+   std::atomic<bool> m_running{false};
+   std::atomic<bool> m_stopRequested{false};
 
-    mutable std::mutex m_logMutex;
-    std::queue<std::string> m_logQueue;
+   mutable std::mutex m_logMutex;
+   std::queue<std::string> m_logQueue;
 
-    mutable std::mutex m_progressMutex;
-    FFmpegProgress m_progress;
-    std::atomic<float> m_vmafScore{-1.0f};
+   mutable std::mutex m_progressMutex;
+   FFmpegProgress m_progress;
+   std::atomic<float> m_vmafScore{-1.0f};
 };
