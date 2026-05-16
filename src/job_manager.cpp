@@ -1,5 +1,6 @@
 #include "job_manager.h"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <functional>
@@ -8,6 +9,7 @@
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #endif
 
@@ -27,27 +29,7 @@ JobManager::~JobManager()
 
 void JobManager::Update()
 {
-   int activeCount = 0;
-   bool anyRunning = false;
-
-   // Process currently active jobs and start new ones if we have capacity
-   for (auto& job : m_jobs)
-   {
-      bool isRunning = (job->state != JobState::INIT && !job->isComplete);
-      bool willRun = (isRunning || (activeCount < m_maxConcurrentJobs && !job->isComplete));
-
-      if (willRun)
-      {
-         ProcessJob(job);
-         if (!job->isComplete)
-            activeCount++;
-      }
-
-      if (!job->isComplete)
-         anyRunning = true;
-   }
-
-   // Append any newly spawned iteration jobs from the search algorithm
+   // 1. Append any newly spawned iteration jobs and sort BEFORE processing
    if (!m_pendingJobs.empty())
    {
       for (auto& j : m_pendingJobs)
@@ -55,6 +37,47 @@ void JobManager::Update()
          m_jobs.push_back(j);
       }
       m_pendingJobs.clear();
+
+      std::stable_sort(m_jobs.begin(), m_jobs.end(), [](const auto& a, const auto& b) {
+         if (a->jobId != b->jobId)
+            return a->jobId < b->jobId;
+         return a->iteration < b->iteration;
+      });
+   }
+
+   // 2. Count already running jobs to strictly enforce concurrency limits
+   int activeCount = 0;
+   for (const auto& job : m_jobs)
+   {
+      if (job->state != JobState::INIT && !job->isComplete)
+      {
+         activeCount++;
+      }
+   }
+
+   bool anyRunning = false;
+
+   // 3. Process jobs
+   for (auto& job : m_jobs)
+   {
+      if (job->isComplete) continue;
+
+      bool isRunning = (job->state != JobState::INIT);
+      bool canStart = (activeCount < m_maxConcurrentJobs);
+
+      if (isRunning || canStart)
+      {
+         bool wasQueued = (job->state == JobState::INIT);
+         ProcessJob(job);
+
+         if (wasQueued && !job->isComplete)
+         {
+            activeCount++;
+         }
+      }
+
+      if (!job->isComplete)
+         anyRunning = true;
    }
 
    // Handle OS Sleep Prevention
@@ -81,7 +104,7 @@ void JobManager::AddJob(const std::string& sourceFile, const VideoMetadata& sour
    job->searchActive = true;
    job->currentCrf = profile.startCrf;
    job->crfMin = 0;
-   job->crfMax = 51;
+   job->crfMax = (profile.codec == "libsvtav1") ? 63 : 51;
    job->iteration = 0;
    job->sourceFile = sourceFile;
    job->sourceMeta = sourceMeta;
@@ -207,7 +230,11 @@ void JobManager::ProcessJob(std::shared_ptr<BenchmarkJob>& job)
          if (!job->commandStarted)
          {
             std::string pixFmt = "yuv420p";
-            if (job->profile.bitDepth == "10-bit")
+            if (job->profile.codec == "libsvtav1")
+            {
+               pixFmt = "yuv420p10le";
+            }
+            else if (job->profile.bitDepth == "10-bit")
             {
                if (job->profile.codec.find("nvenc") != std::string::npos)
                   pixFmt = "p010le";
@@ -216,7 +243,56 @@ void JobManager::ProcessJob(std::shared_ptr<BenchmarkJob>& job)
             }
 
             std::string extra = job->profile.extraArgs;
-            if (!extra.empty())
+            if (job->profile.codec == "libsvtav1")
+            {
+               std::string svtParams = "tune=" + std::to_string(job->profile.svtTune);
+               if (job->profile.filmGrainDenoise)
+               {
+                  svtParams += ":film-grain-denoise=1:film-grain=" + std::to_string(job->profile.filmGrain);
+               }
+               else
+               {
+                  svtParams += ":film-grain-denoise=0:film-grain=0";
+               }
+               
+               if (!extra.empty())
+               {
+                  // If user put raw colon-delimited params (no leading dash), merge them
+                  if (extra.find("-svtav1-params") == std::string::npos && extra[0] != '-')
+                  {
+                     svtParams += ":" + extra;
+                     extra = "";
+                  }
+                  // If user manually specified -svtav1-params, merge the values
+                  else if (extra.find("-svtav1-params") != std::string::npos)
+                  {
+                     // Extract the value after -svtav1-params and merge
+                     size_t paramPos = extra.find("-svtav1-params");
+                     size_t valueStart = paramPos + 14; // length of "-svtav1-params"
+                     while (valueStart < extra.size() && (extra[valueStart] == ' ' || extra[valueStart] == '"'))
+                        valueStart++;
+                     size_t valueEnd = valueStart;
+                     while (valueEnd < extra.size() && extra[valueEnd] != ' ' && extra[valueEnd] != '"')
+                        valueEnd++;
+                     std::string userParams = extra.substr(valueStart, valueEnd - valueStart);
+                     if (!userParams.empty())
+                        svtParams += ":" + userParams;
+                     // Remove the -svtav1-params portion from extra
+                     while (valueEnd < extra.size() && (extra[valueEnd] == '"' || extra[valueEnd] == ' '))
+                        valueEnd++;
+                     extra = extra.substr(0, paramPos) + extra.substr(valueEnd);
+                  }
+               }
+               
+               extra = "-svtav1-params " + svtParams;
+               // Append any remaining extra args
+               std::string remaining = job->profile.extraArgs;
+               if (remaining.find("-svtav1-params") != std::string::npos || (!remaining.empty() && remaining[0] != '-'))
+                  remaining = ""; // Already merged above
+               if (!remaining.empty())
+                  extra += " " + remaining;
+            }
+            else if (!extra.empty())
             {
                if (extra[0] != '-' && extra.find('=') != std::string::npos)
                {
@@ -228,6 +304,10 @@ void JobManager::ProcessJob(std::shared_ptr<BenchmarkJob>& job)
                if (extra[0] != ' ')
                   extra = " " + extra;
             }
+            
+            // Final safety check for leading space if not empty
+            if (!extra.empty() && extra[0] != ' ')
+               extra = " " + extra;
 
             std::string cmd = "ffmpeg -v warning -stats -y"
                " -i " + job->refSegFile +
@@ -339,15 +419,40 @@ void JobManager::ProcessJob(std::shared_ptr<BenchmarkJob>& job)
          else
          {
             float diff = job->finalVMAF - job->profile.targetVmaf;
-            int crfDelta = static_cast<int>(std::round(diff * 2.5f));
+            
+            if (diff < 0.0f)
+            {
+               job->crfMax = std::min(job->crfMax, job->currentCrf - 1);
+            }
+            else if (diff > 0.0f)
+            {
+               job->crfMin = std::max(job->crfMin, job->currentCrf + 1);
+            }
+            else
+            {
+               job->crfMax = job->currentCrf;
+               job->crfMin = job->currentCrf;
+            }
 
-            if (crfDelta > 12) crfDelta = 12;
-            if (crfDelta < -12) crfDelta = -12;
+            float multiplier = 2.5f;
+            int maxDelta = 12;
+
+            if (job->profile.codec == "libsvtav1")
+            {
+               multiplier = 10.0f;
+               maxDelta = 35;
+            }
+
+            int crfDelta = static_cast<int>(std::round(diff * multiplier));
+
+            if (crfDelta > maxDelta) crfDelta = maxDelta;
+            if (crfDelta < -maxDelta) crfDelta = -maxDelta;
             if (crfDelta == 0) crfDelta = (diff > 0) ? 1 : -1;
 
             int nextCrf = job->currentCrf + crfDelta;
-            if (nextCrf < 0) nextCrf = 0;
-            if (nextCrf > 51) nextCrf = 51;
+            
+            if (nextCrf < job->crfMin) nextCrf = job->crfMin;
+            if (nextCrf > job->crfMax) nextCrf = job->crfMax;
 
             bool alreadyTested = false;
             for (int c : job->testedCrfs)
@@ -359,12 +464,53 @@ void JobManager::ProcessJob(std::shared_ptr<BenchmarkJob>& job)
                }
             }
 
-            if (alreadyTested || nextCrf == job->currentCrf)
+            if (job->crfMin > job->crfMax || alreadyTested || nextCrf == job->currentCrf)
             {
                job->searchActive = false;
                job->isComplete = true;
                job->state = JobState::DONE;
-               job->isRecommended = true;
+               
+               std::shared_ptr<BenchmarkJob> bestJob = nullptr;
+               float bestDiff = -9999.0f;
+               
+               for (auto& other : m_jobs)
+               {
+                  if (other->jobId == job->jobId && other->state == JobState::DONE)
+                  {
+                     other->isRecommended = false;
+                     
+                     float diff = other->finalVMAF - other->profile.targetVmaf;
+                     if (diff >= 0.0f)
+                     {
+                        if (!bestJob || other->currentCrf > bestJob->currentCrf)
+                        {
+                           bestJob = other;
+                        }
+                     }
+                  }
+               }
+               
+               if (!bestJob)
+               {
+                  for (auto& other : m_jobs)
+                  {
+                     if (other->jobId == job->jobId && other->state == JobState::DONE)
+                     {
+                        float diff = other->finalVMAF - other->profile.targetVmaf;
+                        if (!bestJob || diff > bestDiff)
+                        {
+                           bestJob = other;
+                           bestDiff = diff;
+                        }
+                     }
+                  }
+               }
+               
+               if (bestJob)
+               {
+                  bestJob->isRecommended = true;
+               }
+
                std::error_code ec;
                std::filesystem::remove(job->outputFile, ec);
             }
@@ -376,6 +522,8 @@ void JobManager::ProcessJob(std::shared_ptr<BenchmarkJob>& job)
                nextJob->profile = job->profile;
                nextJob->searchActive = true;
                nextJob->currentCrf = nextCrf;
+               nextJob->crfMin = job->crfMin;
+               nextJob->crfMax = job->crfMax;
                nextJob->iteration = job->iteration + 1;
                nextJob->testedCrfs = job->testedCrfs;
                nextJob->testedCrfs.push_back(nextCrf);

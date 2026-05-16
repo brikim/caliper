@@ -19,6 +19,11 @@ struct EncodeProfile
    std::string extraArgs = "";
    std::string bitDepth = "8-bit";
    bool isDefault = false;
+
+   // SVT-AV1 specific
+   bool filmGrainDenoise = false;
+   int filmGrain = 10;
+   int svtTune = 0; // 0=VQ, 1=PSNR, 2=SSIM
 };
 
 enum class JobState

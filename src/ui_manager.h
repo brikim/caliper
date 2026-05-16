@@ -36,6 +36,7 @@ private:
 
    int m_activeProfileIdx = 0; // The currently selected/active profile
    int m_maxConcurrentJobs = 1;
+   int m_selectedJobId = -1;
 
    // Segment Settings
    int m_segmentCount = 4;

@@ -13,6 +13,7 @@ using json = nlohmann::json;
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <commdlg.h>
 #endif
@@ -57,19 +58,53 @@ void UIManager::LoadProfiles()
       {
          json j;
          file >> j;
-         for (const auto& item : j)
+         
+         if (j.is_array())
          {
-            EncodeProfile p;
-            p.name = item.value("name", "Custom Profile");
-            p.codec = item.value("codec", "libx264");
-            p.preset = item.value("preset", "medium");
-            p.startCrf = item.value("startCrf", DEFAULT_CRF);
-            p.autoCrf = item.value("autoCrf", true);
-            p.targetVmaf = item.value("targetVmaf", 96);
-            p.extraArgs = item.value("extraArgs", "");
-            p.bitDepth = item.value("bitDepth", "8-bit");
-            p.isDefault = item.value("isDefault", false);
-            m_profiles.push_back(p);
+            for (const auto& item : j)
+            {
+               EncodeProfile p;
+               p.name = item.value("name", "Custom Profile");
+               p.codec = item.value("codec", "libx264");
+               p.preset = item.value("preset", "medium");
+               p.startCrf = item.value("startCrf", DEFAULT_CRF);
+               p.autoCrf = item.value("autoCrf", true);
+               p.targetVmaf = item.value("targetVmaf", 96);
+               p.extraArgs = item.value("extraArgs", "");
+               p.bitDepth = item.value("bitDepth", "8-bit");
+               p.isDefault = item.value("isDefault", false);
+               p.filmGrainDenoise = item.value("filmGrainDenoise", false);
+               p.filmGrain = item.value("filmGrain", 10);
+               p.svtTune = item.value("svtTune", 0);
+               m_profiles.push_back(p);
+            }
+         }
+         else if (j.is_object())
+         {
+            m_segmentCount = j.value("segmentCount", 4);
+            m_segmentDuration = j.value("segmentDuration", 60.0f);
+            m_maxConcurrentJobs = j.value("maxConcurrentJobs", 1);
+            
+            if (j.contains("profiles") && j["profiles"].is_array())
+            {
+               for (const auto& item : j["profiles"])
+               {
+                  EncodeProfile p;
+                  p.name = item.value("name", "Custom Profile");
+                  p.codec = item.value("codec", "libx264");
+                  p.preset = item.value("preset", "medium");
+                  p.startCrf = item.value("startCrf", DEFAULT_CRF);
+                  p.autoCrf = item.value("autoCrf", true);
+                  p.targetVmaf = item.value("targetVmaf", 96);
+                  p.extraArgs = item.value("extraArgs", "");
+                  p.bitDepth = item.value("bitDepth", "8-bit");
+                  p.isDefault = item.value("isDefault", false);
+                  p.filmGrainDenoise = item.value("filmGrainDenoise", false);
+                  p.filmGrain = item.value("filmGrain", 10);
+                  p.svtTune = item.value("svtTune", 0);
+                  m_profiles.push_back(p);
+               }
+            }
          }
       }
       catch (...)
@@ -81,23 +116,32 @@ void UIManager::LoadProfiles()
 
 void UIManager::SaveProfiles()
 {
-   json j = json::array();
+   json jProfiles = json::array();
    for (const auto& p : m_profiles)
    {
-      j.push_back({{"name", p.name},
-                   {"codec", p.codec},
-                   {"preset", p.preset},
-                   {"startCrf", p.startCrf},
-                   {"autoCrf", p.autoCrf},
-                   {"targetVmaf", p.targetVmaf},
-                   {"extraArgs", p.extraArgs},
-                   {"bitDepth", p.bitDepth},
-                   {"isDefault", p.isDefault}});
+      jProfiles.push_back({{"name", p.name},
+                           {"codec", p.codec},
+                           {"preset", p.preset},
+                           {"startCrf", p.startCrf},
+                           {"autoCrf", p.autoCrf},
+                           {"targetVmaf", p.targetVmaf},
+                           {"extraArgs", p.extraArgs},
+                           {"bitDepth", p.bitDepth},
+                           {"isDefault", p.isDefault},
+                           {"filmGrainDenoise", p.filmGrainDenoise},
+                           {"filmGrain", p.filmGrain},
+                           {"svtTune", p.svtTune}});
    }
+   
+   json jRoot;
+   jRoot["segmentCount"] = m_segmentCount;
+   jRoot["segmentDuration"] = m_segmentDuration;
+   jRoot["maxConcurrentJobs"] = m_maxConcurrentJobs;
+   jRoot["profiles"] = jProfiles;
    std::ofstream file("profiles.json");
    if (file.is_open())
    {
-      file << j.dump(4);
+      file << jRoot.dump(4);
       file.flush();
       file.close();
    }
@@ -115,7 +159,7 @@ std::string UIManager::OpenFileDialog()
    ofn.lpstrFilter = "Video Files\0*.mp4;*.mkv;*.avi;*.mov\0All Files\0*.*\0";
    ofn.lpstrFile = filename;
    ofn.nMaxFile = MAX_PATH;
-   ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+   ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
    ofn.lpstrDefExt = "mp4";
 
    if (GetOpenFileNameA(&ofn))
@@ -146,6 +190,11 @@ void UIManager::Draw()
    DrawProfileManager();
    sectionSepFunc();
    DrawJobQueue();
+
+   if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && !ImGui::IsAnyItemHovered())
+   {
+      m_selectedJobId = -1;
+   }
 
    ImGui::End();
 }
@@ -204,10 +253,16 @@ void UIManager::DrawInputSection()
    ImGui::Spacing();
    ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "1b. Segment Settings");
    ImGui::SetNextItemWidth(120);
-   ImGui::DragInt("Segment Count", &m_segmentCount, 1, 1, 10);
+   if (ImGui::DragInt("Segment Count", &m_segmentCount, 1, 1, 10))
+   {
+      SaveProfiles();
+   }
    ImGui::SameLine();
    ImGui::SetNextItemWidth(120);
-   ImGui::DragFloat("Duration (s)", &m_segmentDuration, 1.0f, 1.0f, 300.0f);
+   if (ImGui::DragFloat("Duration (s)", &m_segmentDuration, 1.0f, 1.0f, 300.0f))
+   {
+      SaveProfiles();
+   }
 }
 
 void UIManager::DrawProfileManager()
@@ -267,7 +322,7 @@ void UIManager::DrawProfileManager()
          ImGui::TableNextColumn();
          ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Starting CRF");
          ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::SliderInt("##Starting CRF", &p.startCrf, 0, 51))
+         if (ImGui::SliderInt("##Starting CRF", &p.startCrf, 0, (p.codec == "libsvtav1" ? 63 : 51)))
          {
             SaveProfiles();
          }
@@ -280,43 +335,82 @@ void UIManager::DrawProfileManager()
 
          ImGui::TableNextColumn();
          ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Codec");
-         static const char* codecs[] = {"libx264", "libx265", "hevc_nvenc", "h264_nvenc"};
+         static const char* codecs[] = {"libx264", "libx265", "hevc_nvenc", "h264_nvenc", "libsvtav1"};
+         static const char* codecNames[] = {"H.264", "H.265", "H.265 (NVENC)", "H.264 (NVENC)", "AV1 (10-bit)"};
          int codecIdx = 0;
-         for (int i = 0; i < 4; ++i)
+         for (int i = 0; i < 5; ++i)
             if (p.codec == codecs[i])
                codecIdx = i;
          ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::Combo("##Codec", &codecIdx, codecs, 4))
+         if (ImGui::Combo("##Codec", &codecIdx, codecNames, 5))
          {
             p.codec = codecs[codecIdx];
+            if (p.codec == "libsvtav1")
+            {
+               p.preset = "8";
+            }
+            else if (p.preset.length() <= 2)
+            {
+               p.preset = "medium";
+            }
             SaveProfiles();
          }
 
          ImGui::TableNextColumn();
          ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Preset");
-         static const char* presets[] = {"ultrafast", "superfast", "veryfast",
-                                         "faster",    "fast",      "medium",
-                                         "slow",      "slower",    "veryslow"};
-         int presetIdx = 5;
-         for (int i = 0; i < 9; ++i)
-            if (p.preset == presets[i])
-               presetIdx = i;
-         ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::Combo("##Preset", &presetIdx, presets, 9))
+         if (p.codec == "libsvtav1")
          {
-            p.preset = presets[presetIdx];
-            SaveProfiles();
+            static const char* svtPresets[] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"};
+            int presetIdx = 8;
+            for (int i = 0; i < 14; ++i)
+               if (p.preset == svtPresets[i])
+                  presetIdx = i;
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::Combo("##Preset", &presetIdx, svtPresets, 14))
+            {
+               p.preset = svtPresets[presetIdx];
+               SaveProfiles();
+            }
+         }
+         else
+         {
+            static const char* presets[] = {"ultrafast", "superfast", "veryfast",
+                                            "faster",    "fast",      "medium",
+                                            "slow",      "slower",    "veryslow"};
+            int presetIdx = 5;
+            for (int i = 0; i < 9; ++i)
+               if (p.preset == presets[i])
+                  presetIdx = i;
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::Combo("##Preset", &presetIdx, presets, 9))
+            {
+               p.preset = presets[presetIdx];
+               SaveProfiles();
+            }
          }
 
          ImGui::TableNextColumn();
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Bit Depth");
-         const char* depths[] = {"8-bit", "10-bit"};
-         int depthIdx = (p.bitDepth == "10-bit") ? 1 : 0;
-         ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::Combo("##Bit Depth", &depthIdx, depths, 2))
+         if (p.codec == "libsvtav1")
          {
-            p.bitDepth = depths[depthIdx];
-            SaveProfiles();
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Encoder Tune");
+            const char* tunes[] = {"VQ (0)", "PSNR (1)", "SSIM (2)"};
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::Combo("##Tune", &p.svtTune, tunes, 3))
+            {
+               SaveProfiles();
+            }
+         }
+         else
+         {
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Bit Depth");
+            const char* depths[] = {"8-bit", "10-bit"};
+            int depthIdx = (p.bitDepth == "10-bit") ? 1 : 0;
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::Combo("##Bit Depth", &depthIdx, depths, 2))
+            {
+               p.bitDepth = depths[depthIdx];
+               SaveProfiles();
+            }
          }
 
          ImGui::EndTable();
@@ -324,12 +418,49 @@ void UIManager::DrawProfileManager()
 
       std::array<char, 256> extraBuf;
       snprintf(extraBuf.data(), extraBuf.size(), "%s", p.extraArgs.c_str());
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Extra FFmpeg Arguments");
-      ImGui::SetNextItemWidth(-FLT_MIN);
-      if (ImGui::InputText("##Extra Args", extraBuf.data(), extraBuf.size()))
+      
+      if (p.codec == "libsvtav1")
       {
-         p.extraArgs = extraBuf.data();
-         SaveProfiles();
+         if (ImGui::BeginTable("AV1ExtraControlsTable", 3))
+         {
+            ImGui::TableNextColumn();
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Extra FFmpeg Arguments");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputText("##Extra Args", extraBuf.data(), extraBuf.size()))
+            {
+               p.extraArgs = extraBuf.data();
+               SaveProfiles();
+            }
+
+            ImGui::TableNextColumn();
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Film Grain Denoise");
+            if (ImGui::Checkbox("##FilmGrainDenoise", &p.filmGrainDenoise))
+            {
+               SaveProfiles();
+            }
+
+            ImGui::TableNextColumn();
+            if (p.filmGrainDenoise)
+            {
+               ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Film Grain Strength");
+               ImGui::SetNextItemWidth(-FLT_MIN);
+               if (ImGui::SliderInt("##FilmGrain", &p.filmGrain, 0, 50))
+               {
+                  SaveProfiles();
+               }
+            }
+            ImGui::EndTable();
+         }
+      }
+      else
+      {
+         ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Extra FFmpeg Arguments");
+         ImGui::SetNextItemWidth(-FLT_MIN);
+         if (ImGui::InputText("##Extra Args", extraBuf.data(), extraBuf.size()))
+         {
+            p.extraArgs = extraBuf.data();
+            SaveProfiles();
+         }
       }
       ImGui::TextDisabled("Use standard FFmpeg flags (e.g. -x265-params key=val:key2=val2)");
 
@@ -422,17 +553,17 @@ void UIManager::DrawJobQueue()
    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Job Queue");
 
    if (ImGui::BeginTable("JobTable", 7,
-                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                         ImGuiTableFlags_Borders | 
                          ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp,
                          ImVec2(0, 150)))
    {
       ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 30);
-      ImGui::TableSetupColumn("Source File", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+      ImGui::TableSetupColumn("Source File", ImGuiTableColumnFlags_WidthStretch, 2.5f);
       ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch, 1.0f);
       ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-      ImGui::TableSetupColumn("Current CRF", ImGuiTableColumnFlags_WidthStretch, 0.8f);
-      ImGui::TableSetupColumn("Target VMAF", ImGuiTableColumnFlags_WidthStretch, 0.8f);
-      ImGui::TableSetupColumn("Recommended CRF", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+      ImGui::TableSetupColumn("Current CRF", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+      ImGui::TableSetupColumn("Target VMAF", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+      ImGui::TableSetupColumn("Recommended CRF", ImGuiTableColumnFlags_WidthStretch, 0.8f);
       ImGui::TableHeadersRow();
 
       std::vector<int> uniqueIds;
@@ -465,9 +596,19 @@ void UIManager::DrawJobQueue()
             continue;
 
          ImGui::TableNextRow();
+         bool isSelected = (id == m_selectedJobId);
+         if (isSelected)
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.5f, 0.3f)));
+         else if (rowRunning)
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.4f, 0.3f)));
 
          ImGui::TableNextColumn();
-         ImGui::Text("%d", id);
+         char idLabel[32];
+         snprintf(idLabel, sizeof(idLabel), "%d##%d", id, id);
+         if (ImGui::Selectable(idLabel, isSelected, ImGuiSelectableFlags_SpanAllColumns))
+         {
+            m_selectedJobId = id;
+         }
 
          ImGui::TableNextColumn();
          std::string fileName = std::filesystem::path(latestIter->sourceFile).filename().string();
@@ -519,14 +660,13 @@ void UIManager::DrawJobQueue()
       return h * 3600.0f + m * 60.0f + s;
    };
 
-   if (ImGui::BeginTable("JobTable", 9,
-                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+   if (ImGui::BeginTable("LiveIterationTable", 8,
+                         ImGuiTableFlags_Borders | 
                          ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp |
                          ImGuiTableFlags_ScrollY,
                          ImVec2(0, 300)))
    {
       ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 25);
-      ImGui::TableSetupColumn("Source File", ImGuiTableColumnFlags_WidthStretch, 1.5f);
       ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch, 1.25f);
       ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.5f);
       ImGui::TableSetupColumn("CRF", ImGuiTableColumnFlags_WidthStretch, 0.4f);
@@ -548,20 +688,20 @@ void UIManager::DrawJobQueue()
 
          ImGui::PushID(i);
          ImGui::TableNextRow();
-         if (job->isRecommended)
+
+         bool isSelected = (job->jobId == m_selectedJobId);
+         if (isSelected)
          {
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.0f, 0.3f)));
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.5f, 0.3f)));
+         }
+         else if (!job->isComplete && job->state != JobState::INIT)
+         {
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.4f, 0.3f)));
          }
          ImGui::AlignTextToFramePadding();
 
          ImGui::TableNextColumn();
          ImGui::Text("%d", job->jobId);
-
-         ImGui::TableNextColumn();
-         std::string fileName = std::filesystem::path(job->sourceFile).filename().string();
-         ImGui::Text("%s", fileName.c_str());
-         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", job->sourceFile.c_str());
 
          ImGui::TableNextColumn();
          ImGui::Text("%s", job->profile.name.c_str());
@@ -613,7 +753,7 @@ void UIManager::DrawJobQueue()
          }
 
          ImGui::TableNextColumn();
-         bool showTarget = (job->searchActive || job->iteration > 0);
+         bool showTarget = (job->searchActive || job->iteration > 0 || job->profile.autoCrf);
 
          if (job->finalVMAF > 0.0f)
          {
