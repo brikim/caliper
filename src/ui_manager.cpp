@@ -1,25 +1,19 @@
-#include "imgui.h"
-#include "implot.h"
 #include "ui_manager.h"
 
-#include <algorithm>
 #include <array>
-#include <filesystem>    // Moved from middle to top
+#include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <memory>        // Added for std::shared_ptr/unique_ptr
 #include <nlohmann/json.hpp>
-#include <numeric>       // Moved from middle to top
-#include <string>        // Added
-#include <thread>        // Added for hardware_concurrency
-#include <vector>        // Added
+#include <numeric>
+#include <string>
+#include <vector>
 
 using json = nlohmann::json;
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-// Maintain the space so the auto format keeps windows.h above commdlg.h, which is required for the file dialog
 #include <commdlg.h>
 #endif
 
@@ -28,7 +22,6 @@ UIManager::UIManager()
    LoadProfiles();
    if (m_profiles.empty())
    {
-      // Add default profiles if file doesn't exist
       m_profiles.push_back(
           {"x264 Medium", "libx264", "medium", DEFAULT_CRF, true, 96, "", "8-bit", true});
       m_profiles.push_back(
@@ -53,22 +46,6 @@ UIManager::UIManager()
 UIManager::~UIManager()
 {
    SaveProfiles();
-#ifdef _WIN32
-   if (m_sleepPrevented)
-   {
-      SetThreadExecutionState(ES_CONTINUOUS);
-   }
-#endif
-   for (auto& job : m_jobs)
-   {
-      if (job->runner)
-         job->runner->Stop();
-      std::error_code ec;
-      if (!job->outputFile.empty())
-         std::filesystem::remove(job->outputFile, ec);
-      if (!job->refSegFile.empty())
-         std::filesystem::remove(job->refSegFile, ec);
-   }
 }
 
 void UIManager::LoadProfiles()
@@ -151,6 +128,10 @@ std::string UIManager::OpenFileDialog()
 
 void UIManager::Draw()
 {
+   // Drive the job lifecycle manager processing loops
+   m_jobManager.SetMaxConcurrentJobs(m_maxConcurrentJobs);
+   m_jobManager.Update();
+
    ImGui::Begin("CaliperMain", nullptr, SetupImGuiStyle());
    ImGui::PopStyleVar(3);
 
@@ -160,19 +141,10 @@ void UIManager::Draw()
       ImGui::Spacing();
    };
 
-   // First section
    DrawInputSection();
-
-   // Separator
    sectionSepFunc();
-
-   // Second section
    DrawProfileManager();
-
-   // Separateor
    sectionSepFunc();
-
-   // Third section
    DrawJobQueue();
 
    ImGui::End();
@@ -180,13 +152,11 @@ void UIManager::Draw()
 
 ImGuiWindowFlags UIManager::SetupImGuiStyle()
 {
-   // 1. Get the viewport size to set the window size
    const ImGuiViewport* viewport = ImGui::GetMainViewport();
    ImGui::SetNextWindowPos(viewport->WorkPos);
    ImGui::SetNextWindowSize(viewport->WorkSize);
    ImGui::SetNextWindowViewport(viewport->ID);
 
-   // 3. Optional: If you want the menu/tab bar to look integrated
    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
@@ -196,7 +166,7 @@ ImGuiWindowFlags UIManager::SetupImGuiStyle()
       ImGuiWindowFlags_NoResize |
       ImGuiWindowFlags_NoMove |
       ImGuiWindowFlags_NoBringToFrontOnFocus |
-      ImGuiWindowFlags_NoNavFocus;;
+      ImGuiWindowFlags_NoNavFocus;
 }
 
 void UIManager::DrawInputSection()
@@ -212,7 +182,6 @@ void UIManager::DrawInputSection()
       if (!selected.empty())
       {
          m_referenceVideo = selected;
-         // Fetch metadata
          m_referenceMeta = FFmpegRunner::GetMetadata(m_referenceVideo);
       }
    }
@@ -256,8 +225,7 @@ void UIManager::DrawProfileManager()
    for (int i = 0; i < m_profiles.size(); ++i)
    {
       ImGui::PushID(i);
-      if (ImGui::RadioButton(m_profiles[i].name.c_str(),
-                             m_activeProfileIdx == i))
+      if (ImGui::RadioButton(m_profiles[i].name.c_str(), m_activeProfileIdx == i))
       {
          if (m_activeProfileIdx != i)
          {
@@ -288,7 +256,6 @@ void UIManager::DrawProfileManager()
 
       if (ImGui::BeginTable("ProfileFields", 3))
       {
-         // Row 1: Quality Targets
          ImGui::TableNextColumn();
          ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Target VMAF");
          ImGui::SetNextItemWidth(-FLT_MIN);
@@ -309,9 +276,8 @@ void UIManager::DrawProfileManager()
             SaveProfiles();
          }
 
-         ImGui::TableNextColumn(); // Empty space for balance
+         ImGui::TableNextColumn();
 
-         // Row 2: Encoding Parameters
          ImGui::TableNextColumn();
          ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Codec");
          static const char* codecs[] = {"libx264", "libx265", "hevc_nvenc", "h264_nvenc"};
@@ -358,22 +324,19 @@ void UIManager::DrawProfileManager()
 
       std::array<char, 256> extraBuf;
       snprintf(extraBuf.data(), extraBuf.size(), "%s", p.extraArgs.c_str());
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                         "Extra FFmpeg Arguments");
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Extra FFmpeg Arguments");
       ImGui::SetNextItemWidth(-FLT_MIN);
       if (ImGui::InputText("##Extra Args", extraBuf.data(), extraBuf.size()))
       {
          p.extraArgs = extraBuf.data();
          SaveProfiles();
       }
-      ImGui::TextDisabled(
-          "Use standard FFmpeg flags (e.g. -x265-params key=val:key2=val2)");
+      ImGui::TextDisabled("Use standard FFmpeg flags (e.g. -x265-params key=val:key2=val2)");
 
       ImGui::Spacing();
       if (p.isDefault)
       {
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f),
-                            "Default Profile [Startup]");
+         ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Default Profile [Startup]");
       }
       else
       {
@@ -398,422 +361,52 @@ void UIManager::DrawProfileManager()
    else
    {
       ImGui::Spacing();
-      ImGui::TextColored(
-          ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
-          "Please select a profile from the left to begin editing.");
+      ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "Please select a profile from the left to begin editing.");
       ImGui::TextDisabled("(If the list is empty, click 'Add Profile' above)");
    }
    ImGui::EndChild();
-}
-
-void UIManager::StartBenchmark()
-{
-   if (m_referenceVideo.empty() || !m_referenceMeta.valid)
-      return;
-   if (m_activeProfileIdx < 0 || m_activeProfileIdx >= m_profiles.size())
-      return;
-
-   const auto& p = m_profiles[m_activeProfileIdx];
-
-   auto job = std::make_shared<BenchmarkJob>();
-   job->jobId = m_nextJobId++;
-   job->id = p.name;
-   job->profile = p;
-   job->searchActive = true;
-   job->currentCrf = p.startCrf;
-   job->crfMin = 0;
-   job->crfMax = 51;
-   job->iteration = 0;
-   job->sourceFile = m_referenceVideo;
-   job->sourceMeta = m_referenceMeta;
-   job->testedCrfs.push_back(job->currentCrf);
-
-   // Calculate segment start times
-   job->segmentDuration = m_segmentDuration;
-   float totalDur = job->sourceMeta.duration;
-   int count = m_segmentCount;
-
-   if (count <= 1)
-   {
-      float mid = (totalDur / 2.0f) - (m_segmentDuration / 2.0f);
-      if (mid < 0.0f)
-         mid = 0.0f;
-      job->segmentStartTimes.push_back(mid);
-   }
-   else
-   {
-      float chunkDur = totalDur / count;
-      for (int i = 0; i < count; ++i)
-      {
-         float s = (chunkDur * i) + (chunkDur / 2.0f) - (m_segmentDuration / 2.0f);
-         if (s < 0.0f)
-            s = 0.0f;
-         if (s + m_segmentDuration > totalDur)
-            s = totalDur - m_segmentDuration;
-         if (s < 0.0f)
-            s = 0.0f; // Prevent negative start time if totalDur < m_segmentDuration
-         job->segmentStartTimes.push_back(s);
-      }
-   }
-
-   job->state = JobState::INIT;
-   job->runner = std::make_unique<FFmpegRunner>();
-   m_jobs.push_back(job);
-}
-
-void UIManager::UpdateJob(std::shared_ptr<BenchmarkJob>& job)
-{
-   if (job->isComplete)
-      return;
-
-   std::string jobIdx = std::to_string(std::hash<std::string>{}(job->id) % 1000);
-   std::string tempDist = "temp_dist_" + jobIdx + ".mkv";
-   job->outputFile = tempDist;
-
-   switch (job->state)
-   {
-      case JobState::INIT:
-      {
-         job->currentSegmentIdx = 0;
-         job->segmentVMAFs.clear();
-         job->segmentBitrates.clear();
-         job->segmentSizes.clear();
-         job->estimatedFullSize = 0.0f;
-         job->commandStarted = false;
-         job->state = JobState::EXTRACTING_SEGMENT;
-         break;
-      }
-      case JobState::EXTRACTING_SEGMENT:
-      {
-         if (!job->commandStarted)
-         {
-            // Losslessly copy the reference segment using two-stage seek.
-            // This produces a clean file starting at t=0 that the encoder
-            // will read from — no timing mismatch is possible.
-            float start = job->segmentStartTimes[job->currentSegmentIdx];
-            float preSeek = (start > 5.0f) ? start - 5.0f : 0.0f;
-            float postSeek = start - preSeek;
-            std::string segIdx = std::to_string(job->currentSegmentIdx);
-            job->refSegFile = "temp_ref_" + jobIdx + "_" + segIdx + ".mkv";
-            std::string cmd = "ffmpeg -v error -y"
-               " -ss " +
-               std::to_string(preSeek) + " -i \"" + job->sourceFile +
-               "\""
-               " -ss " +
-               std::to_string(postSeek) + " -t " +
-               std::to_string(job->segmentDuration) +
-               " -map 0:v:0 -c:v ffv1 -an " + job->refSegFile;
-            job->runner->Start(cmd);
-            job->commandStarted = true;
-         }
-         else if (!job->runner->IsRunning())
-         {
-            job->commandStarted = false;
-            std::error_code ec;
-            if (std::filesystem::exists(job->refSegFile, ec) &&
-                std::filesystem::file_size(job->refSegFile, ec) > 0)
-            {
-               job->state = JobState::ENCODING_SEGMENT;
-            }
-            else
-            {
-               job->isComplete = true;
-               job->state = JobState::DONE;
-            }
-         }
-         break;
-      }
-      case JobState::ENCODING_SEGMENT:
-      {
-         if (!job->commandStarted)
-         {
-            // Encode directly from the pre-extracted reference segment.
-            // Both files start at t=0 with identical content — perfect alignment.
-            std::string pixFmt = "yuv420p";
-            if (job->profile.bitDepth == "10-bit")
-            {
-               if (job->profile.codec.find("nvenc") != std::string::npos)
-               {
-                  pixFmt = "p010le";
-               }
-               else
-               {
-                  pixFmt = "yuv420p10le";
-               }
-            }
-
-            std::string extra = job->profile.extraArgs;
-            // Smart Heuristic: If it looks like parameters but lacks a flag,
-            // auto-wrap it for x264/x265.
-            if (!extra.empty())
-            {
-               if (extra[0] != '-' && extra.find('=') != std::string::npos)
-               {
-                  if (job->profile.codec == "libx264")
-                  {
-                     extra = "-x264-params \"" + extra + "\"";
-                  }
-                  else if (job->profile.codec == "libx265")
-                  {
-                     extra = "-x265-params \"" + extra + "\"";
-                  }
-               }
-               if (extra[0] != ' ')
-                  extra = " " + extra;
-            }
-
-            std::string cmd = "ffmpeg -v warning -stats -y"
-               " -i " +
-               job->refSegFile + " -c:v " + job->profile.codec +
-               " -preset " + job->profile.preset + " -pix_fmt " +
-               pixFmt + " -crf " + std::to_string(job->currentCrf) +
-               extra + " " + tempDist;
-            job->runner->Start(cmd);
-            job->commandStarted = true;
-         }
-         else if (!job->runner->IsRunning())
-         {
-            job->commandStarted = false;
-            if (job->runner->GetProgress().bitrate > 0)
-            {
-               job->segmentBitrates.push_back(job->runner->GetProgress().bitrate);
-               std::error_code ec;
-               job->segmentSizes.push_back(std::filesystem::file_size(tempDist, ec));
-               job->state = JobState::VMAFFING_SEGMENT;
-            }
-            else
-            {
-               // Encode failed
-               job->isComplete = true;
-               job->state = JobState::DONE;
-            }
-         }
-         break;
-      }
-      case JobState::VMAFFING_SEGMENT:
-      {
-         if (!job->commandStarted)
-         {
-            int threads = std::thread::hardware_concurrency();
-            if (threads == 0)
-               threads = 4; // Fallback
-
-            // Compare distorted against the pre-extracted reference segment.
-            // Both start at t=0, same content — VMAF will always be accurate.
-            std::string cmd =
-               "ffmpeg -v info"
-               " -i " +
-               tempDist + " -i " + job->refSegFile +
-               " -lavfi \"libvmaf=n_threads=" + std::to_string(threads) +
-               "\""
-               " -f null -";
-            job->runner->Start(cmd);
-            job->commandStarted = true;
-         }
-         else if (!job->runner->IsRunning())
-         {
-            job->commandStarted = false;
-            float score = job->runner->GetVMAFScore();
-            // Clean up the reference segment now that we're done with it
-            std::error_code ec;
-            std::filesystem::remove(job->refSegFile, ec);
-            if (score > 0.0f)
-            {
-               job->segmentVMAFs.push_back(score);
-               job->currentSegmentIdx++;
-               if (job->currentSegmentIdx >= job->segmentStartTimes.size())
-               {
-                  job->state = JobState::CHECKING_SCORE;
-               }
-               else
-               {
-                  job->state = JobState::EXTRACTING_SEGMENT;
-               }
-            }
-            else
-            {
-               // VMAF failed
-               job->isComplete = true;
-               job->state = JobState::DONE;
-            }
-         }
-         break;
-      }
-      case JobState::CHECKING_SCORE:
-      {
-         if (job->segmentVMAFs.empty())
-         {
-            job->isComplete = true; // Error
-            job->state = JobState::DONE;
-            std::error_code ec;
-            std::filesystem::remove(job->outputFile, ec);
-            break;
-         }
-
-         float sumVmaf = std::accumulate(job->segmentVMAFs.begin(),
-                                         job->segmentVMAFs.end(), 0.0f);
-         job->finalVMAF = sumVmaf / job->segmentVMAFs.size();
-
-         float sumBitrate = std::accumulate(job->segmentBitrates.begin(),
-                                            job->segmentBitrates.end(), 0.0f);
-         job->avgBitrate = sumBitrate / job->segmentBitrates.size();
-
-         float sumSize = std::accumulate(job->segmentSizes.begin(),
-                                         job->segmentSizes.end(), 0.0f);
-         float totalSampleDur = job->segmentSizes.size() * job->segmentDuration;
-         if (totalSampleDur > 0 && job->sourceMeta.duration > 0)
-         {
-            job->estimatedFullSize = (sumSize / totalSampleDur) *
-               job->sourceMeta.duration / (1024.0f * 1024.0f);
-         }
-
-         if (!job->searchActive)
-         {
-            job->isComplete = true;
-            job->state = JobState::DONE;
-            job->isRecommended = true;
-            std::error_code ec;
-            std::filesystem::remove(job->outputFile, ec);
-         }
-         else
-         {
-            // Spawn a new job for the next iteration
-            float diff = job->finalVMAF - job->profile.targetVmaf;
-            int crfDelta = static_cast<int>(std::round(diff * 2.5f));
-            if (crfDelta > 12)
-               crfDelta = 12;
-            if (crfDelta < -12)
-               crfDelta = -12;
-            if (crfDelta == 0)
-               crfDelta = (diff > 0) ? 1 : -1;
-
-            int nextCrf = job->currentCrf + crfDelta;
-            if (nextCrf < 0)
-               nextCrf = 0;
-            if (nextCrf > 51)
-               nextCrf = 51;
-
-            // Oscillation / Duplicate detection
-            bool alreadyTested = false;
-            for (int c : job->testedCrfs)
-            {
-               if (c == nextCrf)
-               {
-                  alreadyTested = true;
-                  break;
-               }
-            }
-
-            if (alreadyTested || nextCrf == job->currentCrf)
-            {
-               // We've already tested this CRF or can't move further
-               job->searchActive = false;
-               job->isComplete = true;
-               job->state = JobState::DONE;
-               job->isRecommended = true;
-               std::error_code ec;
-               std::filesystem::remove(job->outputFile, ec);
-            }
-            else
-            {
-               auto nextJob = std::make_shared<BenchmarkJob>();
-               nextJob->jobId = job->jobId;
-               nextJob->id = job->id;
-               nextJob->profile = job->profile;
-               nextJob->searchActive = true;
-               nextJob->currentCrf = nextCrf;
-               nextJob->iteration = job->iteration + 1;
-               nextJob->testedCrfs = job->testedCrfs;
-               nextJob->testedCrfs.push_back(nextCrf);
-
-               nextJob->segmentDuration = job->segmentDuration;
-               nextJob->segmentStartTimes = job->segmentStartTimes;
-
-               nextJob->state = JobState::INIT;
-               nextJob->runner = std::make_unique<FFmpegRunner>();
-               nextJob->sourceFile = job->sourceFile;
-               nextJob->sourceMeta = job->sourceMeta;
-
-               // Mark current job as done
-               job->searchActive = false;
-               job->isComplete = true;
-               job->state = JobState::DONE;
-
-               m_pendingJobs.push_back(nextJob);
-            }
-         }
-         break;
-      }
-      case JobState::DONE:
-         break;
-   }
 }
 
 void UIManager::DrawJobQueue()
 {
    ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "3. Execution");
 
+   const auto& jobs = m_jobManager.GetJobs();
+
    bool anyRunning = false;
-   for (const auto& job : m_jobs)
+   for (const auto& job : jobs)
       if (!job->isComplete)
          anyRunning = true;
-
-#ifdef _WIN32
-   if (anyRunning && !m_sleepPrevented)
-   {
-      SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
-      m_sleepPrevented = true;
-   }
-   else if (!anyRunning && m_sleepPrevented)
-   {
-      SetThreadExecutionState(ES_CONTINUOUS);
-      m_sleepPrevented = false;
-   }
-#endif
 
    bool canEnqueue = !m_referenceVideo.empty() && m_referenceMeta.valid;
    if (!canEnqueue)
       ImGui::BeginDisabled();
    if (ImGui::Button("Enqueue Job", ImVec2(150, 30)))
    {
-      StartBenchmark();
+      if (m_activeProfileIdx >= 0 && m_activeProfileIdx < m_profiles.size())
+      {
+         m_jobManager.AddJob(m_referenceVideo, m_referenceMeta, m_profiles[m_activeProfileIdx], m_segmentCount, m_segmentDuration);
+      }
    }
    if (!canEnqueue)
       ImGui::EndDisabled();
 
    if (anyRunning)
    {
-      ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() -
-                      150);
+      ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 150);
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                            ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-                            ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
       if (ImGui::Button("Stop All Jobs", ImVec2(150, 30)))
       {
-         for (auto& job : m_jobs)
-         {
-            if (!job->isComplete)
-            {
-               job->isComplete = true;
-               job->state = JobState::DONE;
-               if (job->runner)
-                  job->runner->Stop();
-               std::error_code ec;
-               if (!job->outputFile.empty())
-                  std::filesystem::remove(job->outputFile, ec);
-               if (!job->refSegFile.empty())
-                  std::filesystem::remove(job->refSegFile, ec);
-            }
-         }
+         m_jobManager.StopAllJobs();
       }
       ImGui::PopStyleColor(3);
    }
 
    ImGui::SameLine();
    bool hasCompleted = false;
-   for (const auto& job : m_jobs)
+   for (const auto& job : jobs)
       if (job->isComplete)
          hasCompleted = true;
 
@@ -821,42 +414,31 @@ void UIManager::DrawJobQueue()
    {
       if (ImGui::Button("Clear Results", ImVec2(110, 30)))
       {
-         m_jobs.erase(std::remove_if(m_jobs.begin(), m_jobs.end(),
-                                     [](const auto& j) { return j->isComplete; }),
-                      m_jobs.end());
-         if (m_jobs.empty())
-            m_nextJobId = 1;
+         m_jobManager.ClearCompletedJobs();
       }
    }
 
    ImGui::Spacing();
-   ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Master Job Queue");
+   ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Job Queue");
 
-   if (ImGui::BeginTable("MasterJobTable", 7,
+   if (ImGui::BeginTable("JobTable", 7,
                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                         ImGuiTableFlags_Resizable |
-                         ImGuiTableFlags_SizingStretchProp,
+                         ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp,
                          ImVec2(0, 150)))
    {
       ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 30);
-      ImGui::TableSetupColumn("Source File", ImGuiTableColumnFlags_WidthStretch,
-                              1.5f);
-      ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch,
-                              1.0f);
+      ImGui::TableSetupColumn("Source File", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+      ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch, 1.0f);
       ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-      ImGui::TableSetupColumn("Current CRF", ImGuiTableColumnFlags_WidthStretch,
-                              0.8f);
-      ImGui::TableSetupColumn("Target VMAF", ImGuiTableColumnFlags_WidthStretch,
-                              0.8f);
-      ImGui::TableSetupColumn("Recommended CRF",
-                              ImGuiTableColumnFlags_WidthStretch, 1.2f);
+      ImGui::TableSetupColumn("Current CRF", ImGuiTableColumnFlags_WidthStretch, 0.8f);
+      ImGui::TableSetupColumn("Target VMAF", ImGuiTableColumnFlags_WidthStretch, 0.8f);
+      ImGui::TableSetupColumn("Recommended CRF", ImGuiTableColumnFlags_WidthStretch, 1.2f);
       ImGui::TableHeadersRow();
 
       std::vector<int> uniqueIds;
-      for (const auto& j : m_jobs)
+      for (const auto& j : jobs)
       {
-         if (std::find(uniqueIds.begin(), uniqueIds.end(), j->jobId) ==
-             uniqueIds.end())
+         if (std::find(uniqueIds.begin(), uniqueIds.end(), j->jobId) == uniqueIds.end())
          {
             uniqueIds.push_back(j->jobId);
          }
@@ -866,8 +448,8 @@ void UIManager::DrawJobQueue()
       {
          std::shared_ptr<BenchmarkJob> latestIter = nullptr;
          std::shared_ptr<BenchmarkJob> recIter = nullptr;
-         bool anyRunning = false;
-         for (const auto& j : m_jobs)
+         bool rowRunning = false;
+         for (const auto& j : jobs)
          {
             if (j->jobId == id)
             {
@@ -876,7 +458,7 @@ void UIManager::DrawJobQueue()
                if (j->isRecommended)
                   recIter = j;
                if (!j->isComplete && j->state != JobState::INIT)
-                  anyRunning = true;
+                  rowRunning = true;
             }
          }
          if (!latestIter)
@@ -888,17 +470,15 @@ void UIManager::DrawJobQueue()
          ImGui::Text("%d", id);
 
          ImGui::TableNextColumn();
-         std::string fileName =
-            std::filesystem::path(latestIter->sourceFile).filename().string();
+         std::string fileName = std::filesystem::path(latestIter->sourceFile).filename().string();
          ImGui::Text("%s", fileName.c_str());
 
          ImGui::TableNextColumn();
          ImGui::Text("%s", latestIter->profile.name.c_str());
 
          ImGui::TableNextColumn();
-         if (anyRunning)
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Running (Iter %d)",
-                               latestIter->iteration + 1);
+         if (rowRunning)
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Running (Iter %d)", latestIter->iteration + 1);
          else if (latestIter->isComplete)
             ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Complete");
          else
@@ -912,8 +492,7 @@ void UIManager::DrawJobQueue()
 
          ImGui::TableNextColumn();
          if (recIter)
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "CRF %d",
-                               recIter->currentCrf);
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "CRF %d", recIter->currentCrf);
          else
             ImGui::Text("-");
       }
@@ -923,15 +502,14 @@ void UIManager::DrawJobQueue()
    ImGui::Spacing();
    ImGui::Separator();
    ImGui::Spacing();
-   ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Live Iteration Details");
+   ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Iteration Details");
 
-   if (m_jobs.empty())
+   if (jobs.empty())
    {
       ImGui::TextDisabled("No active jobs.");
       return;
    }
 
-   // Helper to convert "00:00:04.10" to seconds
    auto TimeToSeconds = [](const std::string& t) -> float {
       if (t.empty())
          return 0.0f;
@@ -943,59 +521,36 @@ void UIManager::DrawJobQueue()
 
    if (ImGui::BeginTable("JobTable", 9,
                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                         ImGuiTableFlags_Resizable |
-                         ImGuiTableFlags_SizingStretchProp |
+                         ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp |
                          ImGuiTableFlags_ScrollY,
                          ImVec2(0, 300)))
    {
       ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 25);
-      ImGui::TableSetupColumn("Source File", ImGuiTableColumnFlags_WidthStretch,
-                              1.5f);
-      ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch,
-                              1.25f);
+      ImGui::TableSetupColumn("Source File", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+      ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch, 1.25f);
       ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.5f);
       ImGui::TableSetupColumn("CRF", ImGuiTableColumnFlags_WidthStretch, 0.4f);
-      ImGui::TableSetupColumn("Progress", ImGuiTableColumnFlags_WidthStretch,
-                              0.75f);
+      ImGui::TableSetupColumn("Progress", ImGuiTableColumnFlags_WidthStretch, 0.75f);
       ImGui::TableSetupColumn("VMAF", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-      ImGui::TableSetupColumn("Bitrate", ImGuiTableColumnFlags_WidthStretch,
-                              0.7f);
-      ImGui::TableSetupColumn("Est. Size", ImGuiTableColumnFlags_WidthStretch,
-                              0.9f);
+      ImGui::TableSetupColumn("Bitrate", ImGuiTableColumnFlags_WidthStretch, 0.7f);
+      ImGui::TableSetupColumn("Est. Size", ImGuiTableColumnFlags_WidthStretch, 0.9f);
       ImGui::TableHeadersRow();
 
-      int activeCount = 0;
-      for (int i = 0; i < m_jobs.size(); ++i)
+      for (int i = 0; i < jobs.size(); ++i)
       {
-         auto& job = m_jobs[i];
-         ImGui::PushID(i);
+         auto& job = jobs[i];
 
-         // Sequential scheduling: only update if already running or if we have
-         // room
-         bool isRunning = (job->state != JobState::INIT && !job->isComplete);
-         bool willRun = (isRunning ||
-                         (activeCount < m_maxConcurrentJobs && !job->isComplete));
-
-         if (willRun)
-         {
-            UpdateJob(job);
-            if (!job->isComplete)
-               activeCount++;
-         }
-
-         // Filter: Only show running or complete jobs in this table
+         // Filter: Only display elements that have broken out of INIT or are fully completed
          if (job->state == JobState::INIT && !job->isComplete)
          {
-            ImGui::PopID();
             continue;
          }
 
+         ImGui::PushID(i);
          ImGui::TableNextRow();
          if (job->isRecommended)
          {
-            ImGui::TableSetBgColor(
-                ImGuiTableBgTarget_RowBg0,
-                ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.0f, 0.3f)));
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.0f, 0.3f)));
          }
          ImGui::AlignTextToFramePadding();
 
@@ -1003,8 +558,7 @@ void UIManager::DrawJobQueue()
          ImGui::Text("%d", job->jobId);
 
          ImGui::TableNextColumn();
-         std::string fileName =
-            std::filesystem::path(job->sourceFile).filename().string();
+         std::string fileName = std::filesystem::path(job->sourceFile).filename().string();
          ImGui::Text("%s", fileName.c_str());
          if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", job->sourceFile.c_str());
@@ -1019,29 +573,15 @@ void UIManager::DrawJobQueue()
          if (running)
          {
             if (job->state == JobState::INIT)
-            {
                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Queued...");
-            }
             else if (job->state == JobState::ENCODING_SEGMENT)
-            {
-               ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f),
-                                  "Encoding Seg %d/%d", job->currentSegmentIdx + 1,
-                                  job->segmentStartTimes.size());
-            }
+               ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Encoding Seg %d/%d", job->currentSegmentIdx + 1, job->segmentStartTimes.size());
             else if (job->state == JobState::VMAFFING_SEGMENT)
-            {
-               ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                                  "Analyzing Seg %d/%d", job->currentSegmentIdx + 1,
-                                  job->segmentStartTimes.size());
-            }
+               ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Analyzing Seg %d/%d", job->currentSegmentIdx + 1, job->segmentStartTimes.size());
             else if (job->state == JobState::CHECKING_SCORE)
-            {
                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Checking Avg...");
-            }
             else
-            {
                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Initializing...");
-            }
          }
          else
          {
@@ -1056,25 +596,16 @@ void UIManager::DrawJobQueue()
          {
             float progressSec = TimeToSeconds(prog.time);
             int pct = (int)((progressSec / job->segmentDuration) * 100.0f);
-            if (pct > 100)
-               pct = 100;
+            if (pct > 100) pct = 100;
 
             if (job->state == JobState::EXTRACTING_SEGMENT)
-            {
                ImGui::Text("Prep: %d%%", pct);
-            }
             else if (job->state == JobState::ENCODING_SEGMENT)
-            {
                ImGui::Text("Encode: %d%%", pct);
-            }
             else if (job->state == JobState::VMAFFING_SEGMENT)
-            {
                ImGui::Text("VMAF: %d%%", pct);
-            }
             else
-            {
                ImGui::Text("Processing...");
-            }
          }
          else
          {
@@ -1087,19 +618,16 @@ void UIManager::DrawJobQueue()
          if (job->finalVMAF > 0.0f)
          {
             if (showTarget)
-               ImGui::Text("%.2f (Target: %d)", job->finalVMAF,
-                           job->profile.targetVmaf);
+               ImGui::Text("%.2f (Target: %d)", job->finalVMAF, job->profile.targetVmaf);
             else
                ImGui::Text("%.2f", job->finalVMAF);
          }
          else if (!job->segmentVMAFs.empty())
          {
-            float sum = std::accumulate(job->segmentVMAFs.begin(),
-                                        job->segmentVMAFs.end(), 0.0f);
+            float sum = std::accumulate(job->segmentVMAFs.begin(), job->segmentVMAFs.end(), 0.0f);
             float avg = sum / job->segmentVMAFs.size();
             if (showTarget)
-               ImGui::TextDisabled("Avg: %.2f (Target: %d)", avg,
-                                   job->profile.targetVmaf);
+               ImGui::TextDisabled("Avg: %.2f (Target: %d)", avg, job->profile.targetVmaf);
             else
                ImGui::TextDisabled("Avg: %.2f", avg);
          }
@@ -1113,29 +641,19 @@ void UIManager::DrawJobQueue()
 
          ImGui::TableNextColumn();
          if (job->avgBitrate > 0.0f)
-         {
             ImGui::Text("%.1f", job->avgBitrate);
-         }
          else if (!job->segmentBitrates.empty())
-         {
             ImGui::TextDisabled("Curr: %.1f", job->segmentBitrates.back());
-         }
          else
-         {
             ImGui::Text("%.1f", prog.bitrate);
-         }
 
          ImGui::TableNextColumn();
          if (job->estimatedFullSize > 0.0f)
          {
             if (job->estimatedFullSize >= 1024.0f)
-            {
                ImGui::Text("%.2f GB", job->estimatedFullSize / 1024.0f);
-            }
             else
-            {
                ImGui::Text("%.1f MB", job->estimatedFullSize);
-            }
          }
          else
          {
@@ -1145,15 +663,5 @@ void UIManager::DrawJobQueue()
          ImGui::PopID();
       }
       ImGui::EndTable();
-   }
-
-   // Append any newly spawned iteration jobs
-   if (!m_pendingJobs.empty())
-   {
-      for (auto& j : m_pendingJobs)
-      {
-         m_jobs.push_back(j);
-      }
-      m_pendingJobs.clear();
    }
 }

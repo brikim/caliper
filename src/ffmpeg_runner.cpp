@@ -1,4 +1,6 @@
 #include "ffmpeg_runner.h"
+
+#include <array>
 #include <cstdio>
 #include <iostream>
 #include <regex>
@@ -145,11 +147,11 @@ void FFmpegRunner::RunThread(std::string command)
 
    CloseHandle(hWritePipe); // Close the write end in the parent process
 
-   char buffer[4096];
+   std::array<char, 4096> buffer;
    DWORD bytesRead;
    std::string accumulated;
 
-   while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0)
+   while (ReadFile(hReadPipe, buffer.data(), buffer.size() - 1, &bytesRead, NULL) && bytesRead > 0)
    {
       if (m_stopRequested)
       {
@@ -158,7 +160,7 @@ void FFmpegRunner::RunThread(std::string command)
       }
 
       buffer[bytesRead] = '\0';
-      accumulated += buffer;
+      accumulated += buffer.data();
 
       while (true)
       {
@@ -277,10 +279,10 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
    if (!pipe) return meta;
 
    std::string result = "";
-   char buffer[128];
-   while (fgets(buffer, sizeof(buffer), pipe) != nullptr)
+   std::array<char, 128> buffer;
+   while (fgets(buffer.data(), buffer.size(), pipe) != nullptr)
    {
-      result += buffer;
+      result += buffer.data();
    }
    pclose(pipe);
 
