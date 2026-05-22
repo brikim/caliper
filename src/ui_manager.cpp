@@ -366,7 +366,7 @@ void UIManager::DrawProfileManager()
       }
    }
 
-   ImGui::BeginChild("ProfilesList", ImVec2(200, 300), true);
+   ImGui::BeginChild("ProfilesList", ImVec2(250, 300), true);
    for (int i = 0; i < m_profiles.size(); ++i)
    {
       ImGui::PushID(i);
