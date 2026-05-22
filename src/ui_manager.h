@@ -3,11 +3,11 @@
 #include "imgui.h"
 #include "job_manager.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
-#include <vector>
 #include <thread>
-#include <atomic>
+#include <vector>
 
 class UIManager
 {
@@ -30,7 +30,8 @@ private:
 
    // Preview generation
    void GeneratePreview();
-   unsigned int LoadBMPTexture(const std::string& filepath, int& outWidth, int& outHeight);
+   unsigned int LoadBMPTexture(const std::string& filepath, int& outWidth,
+                               int& outHeight);
 
    // Core Managers & State
    JobManager m_jobManager;
@@ -43,6 +44,7 @@ private:
    int m_activeProfileIdx = 0; // The currently selected/active profile
    int m_maxConcurrentJobs = 1;
    int m_selectedJobId = -1;
+   bool m_profilesDirty = false;
 
    std::thread m_previewThread;
    std::atomic<bool> m_previewLoading{false};
