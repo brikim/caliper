@@ -26,7 +26,7 @@ struct EncodeProfile
 
    // SVT-AV1 specific
    bool filmGrainDenoise = false;
-   int filmGrain = 10;
+   float nlmeansStrength = 1.0f;
    int svtTune = 0; // 0=VQ, 1=PSNR, 2=SSIM
 };
 
@@ -63,6 +63,7 @@ struct BenchmarkJob
    std::string outputFile;
    std::unique_ptr<FFmpegRunner> runner;
    bool isComplete = false;
+   bool isCanceled = false;
    float finalVMAF = -1.0f;
    float avgSpeed = 0.0f;
    float avgBitrate = 0.0f; // kbps
@@ -117,6 +118,7 @@ public:
    void StopAllJobs();
    void ClearCompletedJobs();
    void RemoveJob(int jobId);
+   void CancelJob(int jobId);
 
    // Accessors for the UI
    const std::vector<std::shared_ptr<BenchmarkJob>>& GetJobs() const

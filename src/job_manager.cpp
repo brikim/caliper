@@ -86,11 +86,14 @@ void JobManager::Update()
          anyRunning = true;
    }
 
+   if (!m_pendingJobs.empty())
+      anyRunning = true;
+
    // Handle OS Sleep Prevention
 #ifdef _WIN32
    if (anyRunning && !m_sleepPrevented)
    {
-      SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+      SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
       m_sleepPrevented = true;
    }
    else if (!anyRunning && m_sleepPrevented)
@@ -159,6 +162,7 @@ void JobManager::StopAllJobs()
       if (!job->isComplete)
       {
          job->isComplete = true;
+         job->isCanceled = true;
          job->state = JobState::DONE;
          if (job->runner)
             job->runner->Stop();
@@ -173,6 +177,7 @@ void JobManager::StopAllJobs()
    for (auto& job : m_pendingJobs)
    {
       job->isComplete = true;
+      job->isCanceled = true;
       job->state = JobState::DONE;
       if (job->runner)
          job->runner->Stop();
@@ -231,6 +236,38 @@ void JobManager::RemoveJob(int jobId)
       m_nextJobId = 1;
 }
 
+void JobManager::CancelJob(int jobId)
+{
+   for (auto& job : m_jobs)
+   {
+      if (job->jobId == jobId && !job->isComplete)
+      {
+         job->isComplete = true;
+         job->isCanceled = true;
+         job->state = JobState::DONE;
+         if (job->runner)
+            job->runner->Stop();
+
+         std::error_code ec;
+         if (!job->outputFile.empty())
+            std::filesystem::remove(job->outputFile, ec);
+         job->segmentCache = nullptr;
+      }
+   }
+
+   for (auto& job : m_pendingJobs)
+   {
+      if (job->jobId == jobId && !job->isComplete)
+      {
+         job->isComplete = true;
+         job->isCanceled = true;
+         job->state = JobState::DONE;
+         if (job->runner)
+            job->runner->Stop();
+      }
+   }
+}
+
 void JobManager::ProcessJob(std::shared_ptr<BenchmarkJob>& job)
 {
    if (job->isComplete)
@@ -279,7 +316,14 @@ void JobManager::ProcessJob(std::shared_ptr<BenchmarkJob>& job)
                " -ss " +
                std::to_string(postSeek) + " -t " +
                std::to_string(job->segmentDuration) +
-               " -map 0:v:0 -c:v ffv1 -an " + refFile;
+               " -map 0:v:0";
+
+            if (job->profile.codec == "libsvtav1" && job->profile.filmGrainDenoise)
+            {
+               cmd += " -vf \"nlmeans=s=" + std::to_string(job->profile.nlmeansStrength) + ":p=5:r=9\"";
+            }
+
+            cmd += " -c:v ffv1 -an " + refFile;
 
             // Track the file path in the cache as we extract it
             job->segmentCache->refSegFiles.push_back(refFile);
@@ -335,15 +379,9 @@ void JobManager::ProcessJob(std::shared_ptr<BenchmarkJob>& job)
             if (job->profile.codec == "libsvtav1")
             {
                std::string svtParams = "tune=" + std::to_string(job->profile.svtTune);
-               if (job->profile.filmGrainDenoise)
-               {
-                  svtParams += ":film-grain-denoise=1:film-grain=" +
-                     std::to_string(job->profile.filmGrain);
-               }
-               else
-               {
-                  svtParams += ":film-grain-denoise=0:film-grain=0";
-               }
+               // We disable SVT-AV1's internal denoiser and film grain synthesis by default,
+               // as the samples are already high-quality denoised using NLMeans.
+               svtParams += ":film-grain-denoise=0:film-grain=0";
 
                if (!extra.empty())
                {

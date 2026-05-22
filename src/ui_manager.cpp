@@ -19,914 +19,947 @@ using json = nlohmann::json;
 #include <commdlg.h>
 #endif
 
-static void DrawSizeColumn(float sizeMB, bool running = false)
-{
-   if (sizeMB > 0.0f)
-   {
-      if (running)
-      {
-         if (sizeMB >= 1024.0f)
-            ImGui::TextDisabled("Est: %.2f GB", sizeMB / 1024.0f);
-         else
-            ImGui::TextDisabled("Est: %.1f MB", sizeMB);
-      }
+static void DrawSizeColumn(float sizeMB, bool running = false) {
+  if (sizeMB > 0.0f) {
+    if (running) {
+      if (sizeMB >= 1024.0f)
+        ImGui::TextDisabled("Est: %.2f GB", sizeMB / 1024.0f);
       else
-      {
-         if (sizeMB >= 1024.0f)
-            ImGui::Text("%.2f GB", sizeMB / 1024.0f);
-         else
-            ImGui::Text("%.1f MB", sizeMB);
+        ImGui::TextDisabled("Est: %.1f MB", sizeMB);
+    } else {
+      if (sizeMB >= 1024.0f)
+        ImGui::Text("%.2f GB", sizeMB / 1024.0f);
+      else
+        ImGui::Text("%.1f MB", sizeMB);
+    }
+  } else {
+    ImGui::Text("-");
+  }
+}
+
+UIManager::UIManager() {
+  LoadProfiles();
+  if (m_profiles.empty()) {
+    m_profiles.push_back({"x264 Medium", "libx264", "medium", DEFAULT_CRF, true,
+                          96, "", "8-bit", true});
+    m_profiles.push_back({"x264 Slow", "libx264", "slow", DEFAULT_CRF, true, 96,
+                          "", "8-bit", false});
+    m_profiles.push_back({"x265 Medium", "libx265", "medium", DEFAULT_CRF, true,
+                          96, "", "8-bit", false});
+  }
+  if (!m_profiles.empty()) {
+    m_activeProfileIdx = 0;
+    for (int i = 0; i < m_profiles.size(); ++i) {
+      if (m_profiles[i].isDefault) {
+        m_activeProfileIdx = i;
+        break;
       }
-   }
-   else
-   {
-      ImGui::Text("-");
-   }
+    }
+  }
 }
 
-UIManager::UIManager()
-{
-   LoadProfiles();
-   if (m_profiles.empty())
-   {
-      m_profiles.push_back({"x264 Medium", "libx264", "medium", DEFAULT_CRF, true,
-                            96, "", "8-bit", true});
-      m_profiles.push_back({"x264 Slow", "libx264", "slow", DEFAULT_CRF, true, 96,
-                            "", "8-bit", false});
-      m_profiles.push_back({"x265 Medium", "libx265", "medium", DEFAULT_CRF, true,
-                            96, "", "8-bit", false});
-   }
-   if (!m_profiles.empty())
-   {
-      m_activeProfileIdx = 0;
-      for (int i = 0; i < m_profiles.size(); ++i)
-      {
-         if (m_profiles[i].isDefault)
-         {
-            m_activeProfileIdx = i;
-            break;
-         }
+UIManager::~UIManager() { SaveProfiles(); }
+
+void UIManager::LoadProfiles() {
+  std::ifstream file("profiles.json");
+  if (file.is_open()) {
+    try {
+      json j;
+      file >> j;
+
+      if (j.is_array()) {
+        for (const auto &item : j) {
+          EncodeProfile p;
+          p.name = item.value("name", "Custom Profile");
+          p.codec = item.value("codec", "libx264");
+          p.preset = item.value("preset", "medium");
+          p.startCrf = item.value("startCrf", DEFAULT_CRF);
+          p.autoCrf = item.value("autoCrf", true);
+          p.targetVmaf = item.value("targetVmaf", 96);
+          p.extraArgs = item.value("extraArgs", "");
+          p.bitDepth = item.value("bitDepth", "8-bit");
+          p.isDefault = item.value("isDefault", false);
+          p.filmGrainDenoise = item.value("filmGrainDenoise", false);
+          p.nlmeansStrength = item.value("nlmeansStrength", 1.0f);
+          p.svtTune = item.value("svtTune", 0);
+          p.segmentCount = item.value("segmentCount", 4);
+          p.segmentDuration = item.value("segmentDuration", 60.0f);
+          m_profiles.push_back(p);
+        }
+      } else if (j.is_object()) {
+        m_maxConcurrentJobs = j.value("maxConcurrentJobs", 1);
+
+        if (j.contains("profiles") && j["profiles"].is_array()) {
+          for (const auto &item : j["profiles"]) {
+            EncodeProfile p;
+            p.name = item.value("name", "Custom Profile");
+            p.codec = item.value("codec", "libx264");
+            p.preset = item.value("preset", "medium");
+            p.startCrf = item.value("startCrf", DEFAULT_CRF);
+            p.autoCrf = item.value("autoCrf", true);
+            p.targetVmaf = item.value("targetVmaf", 96);
+            p.extraArgs = item.value("extraArgs", "");
+            p.bitDepth = item.value("bitDepth", "8-bit");
+            p.isDefault = item.value("isDefault", false);
+            p.filmGrainDenoise = item.value("filmGrainDenoise", false);
+            p.nlmeansStrength = item.value("nlmeansStrength", 1.0f);
+            p.svtTune = item.value("svtTune", 0);
+            p.segmentCount = item.value("segmentCount", 4);
+            p.segmentDuration = item.value("segmentDuration", 60.0f);
+            m_profiles.push_back(p);
+          }
+        }
       }
-   }
+    } catch (...) {
+      std::cerr << "Failed to parse profiles.json\n";
+    }
+  }
 }
 
-UIManager::~UIManager()
-{
-   SaveProfiles();
+void UIManager::SaveProfiles() {
+  json jProfiles = json::array();
+  for (const auto &p : m_profiles) {
+    jProfiles.push_back({{"name", p.name},
+                         {"codec", p.codec},
+                         {"preset", p.preset},
+                         {"startCrf", p.startCrf},
+                         {"autoCrf", p.autoCrf},
+                         {"targetVmaf", p.targetVmaf},
+                         {"extraArgs", p.extraArgs},
+                         {"bitDepth", p.bitDepth},
+                         {"isDefault", p.isDefault},
+                         {"filmGrainDenoise", p.filmGrainDenoise},
+                         {"nlmeansStrength", p.nlmeansStrength},
+                         {"svtTune", p.svtTune},
+                         {"segmentCount", p.segmentCount},
+                         {"segmentDuration", p.segmentDuration}});
+  }
+
+  json jRoot;
+  jRoot["maxConcurrentJobs"] = m_maxConcurrentJobs;
+  jRoot["profiles"] = jProfiles;
+  std::ofstream file("profiles.json");
+  if (file.is_open()) {
+    file << jRoot.dump(4);
+    file.flush();
+    file.close();
+  }
 }
 
-void UIManager::LoadProfiles()
-{
-   std::ifstream file("profiles.json");
-   if (file.is_open())
-   {
-      try
-      {
-         json j;
-         file >> j;
-
-         if (j.is_array())
-         {
-            for (const auto& item : j)
-            {
-               EncodeProfile p;
-               p.name = item.value("name", "Custom Profile");
-               p.codec = item.value("codec", "libx264");
-               p.preset = item.value("preset", "medium");
-               p.startCrf = item.value("startCrf", DEFAULT_CRF);
-               p.autoCrf = item.value("autoCrf", true);
-               p.targetVmaf = item.value("targetVmaf", 96);
-               p.extraArgs = item.value("extraArgs", "");
-               p.bitDepth = item.value("bitDepth", "8-bit");
-               p.isDefault = item.value("isDefault", false);
-               p.filmGrainDenoise = item.value("filmGrainDenoise", false);
-               p.filmGrain = item.value("filmGrain", 10);
-               p.svtTune = item.value("svtTune", 0);
-               p.segmentCount = item.value("segmentCount", 4);
-               p.segmentDuration = item.value("segmentDuration", 60.0f);
-               m_profiles.push_back(p);
-            }
-         }
-         else if (j.is_object())
-         {
-            m_maxConcurrentJobs = j.value("maxConcurrentJobs", 1);
-
-            if (j.contains("profiles") && j["profiles"].is_array())
-            {
-               for (const auto& item : j["profiles"])
-               {
-                  EncodeProfile p;
-                  p.name = item.value("name", "Custom Profile");
-                  p.codec = item.value("codec", "libx264");
-                  p.preset = item.value("preset", "medium");
-                  p.startCrf = item.value("startCrf", DEFAULT_CRF);
-                  p.autoCrf = item.value("autoCrf", true);
-                  p.targetVmaf = item.value("targetVmaf", 96);
-                  p.extraArgs = item.value("extraArgs", "");
-                  p.bitDepth = item.value("bitDepth", "8-bit");
-                  p.isDefault = item.value("isDefault", false);
-                  p.filmGrainDenoise = item.value("filmGrainDenoise", false);
-                  p.filmGrain = item.value("filmGrain", 10);
-                  p.svtTune = item.value("svtTune", 0);
-                  p.segmentCount = item.value("segmentCount", 4);
-                  p.segmentDuration = item.value("segmentDuration", 60.0f);
-                  m_profiles.push_back(p);
-               }
-            }
-         }
-      }
-      catch (...)
-      {
-         std::cerr << "Failed to parse profiles.json\n";
-      }
-   }
-}
-
-void UIManager::SaveProfiles()
-{
-   json jProfiles = json::array();
-   for (const auto& p : m_profiles)
-   {
-      jProfiles.push_back({{"name", p.name},
-                           {"codec", p.codec},
-                           {"preset", p.preset},
-                           {"startCrf", p.startCrf},
-                           {"autoCrf", p.autoCrf},
-                           {"targetVmaf", p.targetVmaf},
-                           {"extraArgs", p.extraArgs},
-                           {"bitDepth", p.bitDepth},
-                           {"isDefault", p.isDefault},
-                           {"filmGrainDenoise", p.filmGrainDenoise},
-                           {"filmGrain", p.filmGrain},
-                           {"svtTune", p.svtTune},
-                           {"segmentCount", p.segmentCount},
-                           {"segmentDuration", p.segmentDuration}});
-   }
-
-   json jRoot;
-   jRoot["maxConcurrentJobs"] = m_maxConcurrentJobs;
-   jRoot["profiles"] = jProfiles;
-   std::ofstream file("profiles.json");
-   if (file.is_open())
-   {
-      file << jRoot.dump(4);
-      file.flush();
-      file.close();
-   }
-}
-
-std::string UIManager::OpenFileDialog()
-{
-   std::string result = "";
+std::string UIManager::OpenFileDialog() {
+  std::string result = "";
 #ifdef _WIN32
-   char filename[MAX_PATH] = {0};
-   OPENFILENAMEA ofn;
-   ZeroMemory(&ofn, sizeof(ofn));
-   ofn.lStructSize = sizeof(ofn);
-   ofn.hwndOwner = NULL;
-   ofn.lpstrFilter = "Video Files\0*.mp4;*.mkv;*.avi;*.mov\0All Files\0*.*\0";
-   ofn.lpstrFile = filename;
-   ofn.nMaxFile = MAX_PATH;
-   ofn.Flags =
+  char filename[MAX_PATH] = {0};
+  OPENFILENAMEA ofn;
+  ZeroMemory(&ofn, sizeof(ofn));
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = NULL;
+  ofn.lpstrFilter = "Video Files\0*.mp4;*.mkv;*.avi;*.mov\0All Files\0*.*\0";
+  ofn.lpstrFile = filename;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.Flags =
       OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
-   ofn.lpstrDefExt = "mp4";
+  ofn.lpstrDefExt = "mp4";
 
-   if (GetOpenFileNameA(&ofn))
-   {
-      result = std::string(filename);
-   }
+  if (GetOpenFileNameA(&ofn)) {
+    result = std::string(filename);
+  }
 #endif
-   return result;
+  return result;
 }
 
-void UIManager::Draw()
-{
-   // Drive the job lifecycle manager processing loops
-   m_jobManager.SetMaxConcurrentJobs(m_maxConcurrentJobs);
-   m_jobManager.Update();
+void UIManager::Draw() {
+  // Drive the job lifecycle manager processing loops
+  m_jobManager.SetMaxConcurrentJobs(m_maxConcurrentJobs);
+  m_jobManager.Update();
 
-   ImGui::Begin("CaliperMain", nullptr, SetupImGuiStyle());
-   ImGui::PopStyleVar(3);
+  ImGui::Begin("CaliperMain", nullptr, SetupImGuiStyle());
+  ImGui::PopStyleVar(3);
 
-   auto sectionSepFunc = []() {
-      ImGui::Spacing();
-      ImGui::Separator();
-      ImGui::Spacing();
-   };
+  auto sectionSepFunc = []() {
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+  };
 
-   DrawInputSection();
-   sectionSepFunc();
-   DrawProfileManager();
-   sectionSepFunc();
-   DrawJobQueue();
+  DrawInputSection();
+  sectionSepFunc();
+  DrawProfileManager();
+  sectionSepFunc();
+  DrawJobQueue();
 
-   if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) &&
-       !ImGui::IsAnyItemHovered())
-   {
-      m_selectedJobId = -1;
-   }
+  if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) &&
+      !ImGui::IsAnyItemHovered()) {
+    m_selectedJobId = -1;
+  }
 
-   ImGui::End();
+  ImGui::End();
 }
 
-ImGuiWindowFlags UIManager::SetupImGuiStyle()
-{
-   const ImGuiViewport* viewport = ImGui::GetMainViewport();
-   ImGui::SetNextWindowPos(viewport->WorkPos);
-   ImGui::SetNextWindowSize(viewport->WorkSize);
-   ImGui::SetNextWindowViewport(viewport->ID);
+ImGuiWindowFlags UIManager::SetupImGuiStyle() {
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(viewport->WorkPos);
+  ImGui::SetNextWindowSize(viewport->WorkSize);
+  ImGui::SetNextWindowViewport(viewport->ID);
 
-   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
 
-   return ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+  return ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
 }
 
-void UIManager::DrawInputSection()
-{
-   ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "1. Source Video");
+void UIManager::DrawInputSection() {
+  ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "1. Source Video");
 
-   if (ImGui::Button("Browse..."))
-   {
-      std::string selected = OpenFileDialog();
-      if (!selected.empty())
-      {
-         m_referenceVideo = selected;
-         m_referenceMeta = FFmpegRunner::GetMetadata(m_referenceVideo);
+  if (ImGui::Button("Browse...")) {
+    std::string selected = OpenFileDialog();
+    if (!selected.empty()) {
+      m_referenceVideo = selected;
+      m_referenceMeta = FFmpegRunner::GetMetadata(m_referenceVideo);
+    }
+  }
+  ImGui::SameLine();
+  ImGui::InputText("##ReferenceVideo", m_referenceVideo.data(),
+                   m_referenceVideo.capacity(), ImGuiInputTextFlags_ReadOnly);
+
+  if (m_referenceMeta.valid) {
+    int hours = static_cast<int>(m_referenceMeta.duration) / 3600;
+    int minutes = (static_cast<int>(m_referenceMeta.duration) % 3600) / 60;
+    int seconds = static_cast<int>(m_referenceMeta.duration) % 60;
+
+    ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f),
+                       "Codec: %s | %dx%d | %.2f fps | %02d:%02d:%02d | %d-bit",
+                       m_referenceMeta.codec.c_str(), m_referenceMeta.width,
+                       m_referenceMeta.height, m_referenceMeta.framerate, hours,
+                       minutes, seconds, m_referenceMeta.bit_depth);
+  } else if (!m_referenceVideo.empty()) {
+    ImGui::TextColored(
+        ImVec4(0.8f, 0.4f, 0.4f, 1.0f),
+        "Failed to read video metadata. Ensure ffprobe is in PATH.");
+  }
+}
+
+void UIManager::DrawProfileManager() {
+  ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "2. Encoding Profiles");
+
+  if (ImGui::Button("Add Profile")) {
+    m_profiles.push_back({"New Profile", "libx264", "medium", DEFAULT_CRF, true,
+                          96, "", "8-bit", false});
+    m_activeProfileIdx = m_profiles.size() - 1;
+  }
+
+  ImGui::BeginChild("ProfilesList", ImVec2(200, 325), true);
+  for (int i = 0; i < m_profiles.size(); ++i) {
+    ImGui::PushID(i);
+    std::string label = m_profiles[i].name;
+    if (m_profiles[i].isDefault)
+      label += " (Default)";
+    if (ImGui::RadioButton(label.c_str(), m_activeProfileIdx == i)) {
+      if (m_activeProfileIdx != i) {
+        SaveProfiles();
+        m_activeProfileIdx = i;
       }
-   }
-   ImGui::SameLine();
-   ImGui::InputText("##ReferenceVideo", m_referenceVideo.data(),
-                    m_referenceVideo.capacity(), ImGuiInputTextFlags_ReadOnly);
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
 
-   if (m_referenceMeta.valid)
-   {
-      int hours = static_cast<int>(m_referenceMeta.duration) / 3600;
-      int minutes = (static_cast<int>(m_referenceMeta.duration) % 3600) / 60;
-      int seconds = static_cast<int>(m_referenceMeta.duration) % 60;
+  ImGui::SameLine();
 
-      ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f),
-                         "Codec: %s | %dx%d | %.2f fps | %02d:%02d:%02d | %d-bit",
-                         m_referenceMeta.codec.c_str(), m_referenceMeta.width,
-                         m_referenceMeta.height, m_referenceMeta.framerate, hours,
-                         minutes, seconds, m_referenceMeta.bit_depth);
-   }
-   else if (!m_referenceVideo.empty())
-   {
-      ImGui::TextColored(
-          ImVec4(0.8f, 0.4f, 0.4f, 1.0f),
-          "Failed to read video metadata. Ensure ffprobe is in PATH.");
-   }
-}
+  ImGui::BeginChild("ProfileEditor", ImVec2(0, 325), true);
+  if (m_activeProfileIdx >= 0 && m_activeProfileIdx < m_profiles.size()) {
+    auto &p = m_profiles[m_activeProfileIdx];
 
-void UIManager::DrawProfileManager()
-{
-   ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "2. Encoding Profiles");
+    std::array<char, 64> nameBuf;
+    snprintf(nameBuf.data(), nameBuf.size(), "%s", p.name.c_str());
+    ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Profile Name");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::InputText("##Name", nameBuf.data(), nameBuf.size())) {
+      p.name = nameBuf.data();
+      SaveProfiles();
+    }
 
-   if (ImGui::Button("Add Profile"))
-   {
-      m_profiles.push_back({"New Profile", "libx264", "medium", DEFAULT_CRF, true,
-                            96, "", "8-bit", false});
-      m_activeProfileIdx = m_profiles.size() - 1;
-   }
-
-   ImGui::BeginChild("ProfilesList", ImVec2(200, 325), true);
-   for (int i = 0; i < m_profiles.size(); ++i)
-   {
-      ImGui::PushID(i);
-      if (ImGui::RadioButton(m_profiles[i].name.c_str(),
-                             m_activeProfileIdx == i))
-      {
-         if (m_activeProfileIdx != i)
-         {
-            SaveProfiles();
-            m_activeProfileIdx = i;
-         }
-      }
-      ImGui::PopID();
-   }
-   ImGui::EndChild();
-
-   ImGui::SameLine();
-
-   ImGui::BeginChild("ProfileEditor", ImVec2(0, 325), true);
-   if (m_activeProfileIdx >= 0 && m_activeProfileIdx < m_profiles.size())
-   {
-      auto& p = m_profiles[m_activeProfileIdx];
-
-      std::array<char, 64> nameBuf;
-      snprintf(nameBuf.data(), nameBuf.size(), "%s", p.name.c_str());
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Profile Name");
+    if (ImGui::BeginTable("ProfileFields", 4)) {
+      ImGui::TableNextColumn();
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Target VMAF");
       ImGui::SetNextItemWidth(-FLT_MIN);
-      if (ImGui::InputText("##Name", nameBuf.data(), nameBuf.size()))
-      {
-         p.name = nameBuf.data();
-         SaveProfiles();
+      if (ImGui::SliderInt("##Target VMAF", &p.targetVmaf, 0, 100)) {
+        SaveProfiles();
       }
 
-      if (ImGui::BeginTable("ProfileFields", 4))
-      {
-         ImGui::TableNextColumn();
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Target VMAF");
-         ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::SliderInt("##Target VMAF", &p.targetVmaf, 0, 100))
-         {
-            SaveProfiles();
-         }
-
-         ImGui::TableNextColumn();
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Starting CRF");
-         ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::SliderInt("##Starting CRF", &p.startCrf, 0,
-                              (p.codec == "libsvtav1" ? 63 : 51)))
-         {
-            SaveProfiles();
-         }
-         if (ImGui::IsItemDeactivatedAfterEdit())
-         {
-            SaveProfiles();
-         }
-
-         ImGui::TableNextColumn();
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Segment Count");
-         ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::SliderInt("##SegCount", &p.segmentCount, 1, 50))
-         {
-            SaveProfiles();
-         }
-
-         ImGui::TableNextColumn();
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                            "Segment Duration (s)");
-         ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::SliderFloat("##SegDuration", &p.segmentDuration, 1.0f, 300.0f,
-                                "%.0fs"))
-         {
-            SaveProfiles();
-         }
-
-         ImGui::TableNextColumn();
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Codec");
-         static const char* codecs[] = {"libx264", "libx265", "hevc_nvenc",
-                                        "h264_nvenc", "libsvtav1"};
-         static const char* codecNames[] = {"H.264", "H.265", "H.265 (NVENC)",
-                                            "H.264 (NVENC)", "AV1 (10-bit)"};
-         int codecIdx = 0;
-         for (int i = 0; i < 5; ++i)
-            if (p.codec == codecs[i])
-               codecIdx = i;
-         ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::Combo("##Codec", &codecIdx, codecNames, 5))
-         {
-            p.codec = codecs[codecIdx];
-            if (p.codec == "libsvtav1")
-            {
-               p.preset = "8";
-            }
-            else if (p.preset.length() <= 2)
-            {
-               p.preset = "medium";
-            }
-            SaveProfiles();
-         }
-
-         ImGui::TableNextColumn();
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Preset");
-         if (p.codec == "libsvtav1")
-         {
-            static const char* svtPresets[] = {"0",  "1",  "2",  "3", "4",
-                                               "5",  "6",  "7",  "8", "9",
-                                               "10", "11", "12", "13"};
-            int presetIdx = 8;
-            for (int i = 0; i < 14; ++i)
-               if (p.preset == svtPresets[i])
-                  presetIdx = i;
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::Combo("##Preset", &presetIdx, svtPresets, 14))
-            {
-               p.preset = svtPresets[presetIdx];
-               SaveProfiles();
-            }
-         }
-         else
-         {
-            static const char* presets[] = {"ultrafast", "superfast", "veryfast",
-                                            "faster",    "fast",      "medium",
-                                            "slow",      "slower",    "veryslow"};
-            int presetIdx = 5;
-            for (int i = 0; i < 9; ++i)
-               if (p.preset == presets[i])
-                  presetIdx = i;
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::Combo("##Preset", &presetIdx, presets, 9))
-            {
-               p.preset = presets[presetIdx];
-               SaveProfiles();
-            }
-         }
-
-         ImGui::TableNextColumn();
-         if (p.codec == "libsvtav1")
-         {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Encoder Tune");
-            const char* tunes[] = {"VQ (0)", "PSNR (1)", "SSIM (2)"};
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::Combo("##Tune", &p.svtTune, tunes, 3))
-            {
-               SaveProfiles();
-            }
-         }
-         else
-         {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Bit Depth");
-            const char* depths[] = {"8-bit", "10-bit"};
-            int depthIdx = (p.bitDepth == "10-bit") ? 1 : 0;
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::Combo("##Bit Depth", &depthIdx, depths, 2))
-            {
-               p.bitDepth = depths[depthIdx];
-               SaveProfiles();
-            }
-         }
-
-         ImGui::EndTable();
+      ImGui::TableNextColumn();
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Starting CRF");
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      if (ImGui::SliderInt("##Starting CRF", &p.startCrf, 0,
+                           (p.codec == "libsvtav1" ? 63 : 51))) {
+        SaveProfiles();
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
+        SaveProfiles();
       }
 
-      std::array<char, 256> extraBuf;
-      snprintf(extraBuf.data(), extraBuf.size(), "%s", p.extraArgs.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Segment Count");
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      if (ImGui::SliderInt("##SegCount", &p.segmentCount, 1, 50)) {
+        SaveProfiles();
+      }
 
-      if (p.codec == "libsvtav1")
-      {
-         if (ImGui::BeginTable("AV1ExtraControlsTable", 3))
-         {
-            ImGui::TableNextColumn();
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                               "Extra FFmpeg Arguments");
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::InputText("##Extra Args", extraBuf.data(),
-                                 extraBuf.size()))
-            {
-               p.extraArgs = extraBuf.data();
-               SaveProfiles();
+      ImGui::TableNextColumn();
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+                         "Segment Duration (s)");
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      if (ImGui::SliderFloat("##SegDuration", &p.segmentDuration, 1.0f, 300.0f,
+                             "%.0fs")) {
+        SaveProfiles();
+      }
+
+      ImGui::TableNextColumn();
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Codec");
+      static const char *codecs[] = {"libx264", "libx265", "hevc_nvenc",
+                                     "h264_nvenc", "libsvtav1"};
+      static const char *codecNames[] = {"H.264", "H.265", "H.265 (NVENC)",
+                                         "H.264 (NVENC)", "AV1 (10-bit)"};
+      int codecIdx = 0;
+      for (int i = 0; i < 5; ++i)
+        if (p.codec == codecs[i])
+          codecIdx = i;
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      if (ImGui::Combo("##Codec", &codecIdx, codecNames, 5)) {
+        p.codec = codecs[codecIdx];
+        if (p.codec == "libsvtav1") {
+          p.preset = "8";
+        } else if (p.preset.length() <= 2) {
+          p.preset = "medium";
+        }
+        SaveProfiles();
+      }
+
+      ImGui::TableNextColumn();
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Preset");
+      if (p.codec == "libsvtav1") {
+        static const char *svtPresets[] = {"0",  "1",  "2",  "3", "4",
+                                           "5",  "6",  "7",  "8", "9",
+                                           "10", "11", "12", "13"};
+        int presetIdx = 8;
+        for (int i = 0; i < 14; ++i)
+          if (p.preset == svtPresets[i])
+            presetIdx = i;
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##Preset", &presetIdx, svtPresets, 14)) {
+          p.preset = svtPresets[presetIdx];
+          SaveProfiles();
+        }
+      } else {
+        static const char *presets[] = {"ultrafast", "superfast", "veryfast",
+                                        "faster",    "fast",      "medium",
+                                        "slow",      "slower",    "veryslow"};
+        int presetIdx = 5;
+        for (int i = 0; i < 9; ++i)
+          if (p.preset == presets[i])
+            presetIdx = i;
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##Preset", &presetIdx, presets, 9)) {
+          p.preset = presets[presetIdx];
+          SaveProfiles();
+        }
+      }
+
+      ImGui::TableNextColumn();
+      if (p.codec == "libsvtav1") {
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Encoder Tune");
+        const char *tunes[] = {"VQ (0)", "PSNR (1)", "SSIM (2)"};
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##Tune", &p.svtTune, tunes, 3)) {
+          SaveProfiles();
+        }
+      } else {
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Bit Depth");
+        const char *depths[] = {"8-bit", "10-bit"};
+        int depthIdx = (p.bitDepth == "10-bit") ? 1 : 0;
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##Bit Depth", &depthIdx, depths, 2)) {
+          p.bitDepth = depths[depthIdx];
+          SaveProfiles();
+        }
+      }
+
+      ImGui::EndTable();
+    }
+
+    std::array<char, 256> extraBuf;
+    snprintf(extraBuf.data(), extraBuf.size(), "%s", p.extraArgs.c_str());
+
+    if (p.codec == "libsvtav1") {
+      if (ImGui::BeginTable("AV1ExtraControlsTable", 3)) {
+        ImGui::TableNextColumn();
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+                           "Extra FFmpeg Arguments");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputText("##Extra Args", extraBuf.data(),
+                             extraBuf.size())) {
+          p.extraArgs = extraBuf.data();
+          SaveProfiles();
+        }
+
+        ImGui::TableNextColumn();
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+                           "Film Grain Denoise");
+        if (ImGui::Checkbox("##FilmGrainDenoise", &p.filmGrainDenoise)) {
+          SaveProfiles();
+        }
+
+        ImGui::TableNextColumn();
+        if (p.filmGrainDenoise) {
+          ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+                             "Denoise Strength");
+          ImGui::SetNextItemWidth(-FLT_MIN);
+
+          int steps = (int)(p.nlmeansStrength * 2.0f);
+          if (steps < 1)
+            steps = 1;
+          if (steps > 10)
+            steps = 10;
+          char buf[32];
+          snprintf(buf, sizeof(buf), "%.1f", p.nlmeansStrength);
+          if (ImGui::SliderInt("##NLMeansStrength", &steps, 1, 10, buf)) {
+            p.nlmeansStrength = steps * 0.5f;
+          }
+
+          ImGui::Spacing();
+          bool hasVideo = !m_referenceVideo.empty() && m_referenceMeta.valid;
+          if (!hasVideo)
+            ImGui::BeginDisabled();
+          if (m_previewLoading) {
+            ImGui::Button("Denoising...", ImVec2(-FLT_MIN, 0));
+          } else {
+            if (ImGui::Button("Test Denoiser", ImVec2(-FLT_MIN, 0))) {
+              GeneratePreview();
             }
-
-            ImGui::TableNextColumn();
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                               "Film Grain Denoise");
-            if (ImGui::Checkbox("##FilmGrainDenoise", &p.filmGrainDenoise))
-            {
-               SaveProfiles();
-            }
-
-            ImGui::TableNextColumn();
-            if (p.filmGrainDenoise)
-            {
-               ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                                  "Film Grain Strength");
-               ImGui::SetNextItemWidth(-FLT_MIN);
-               if (ImGui::SliderInt("##FilmGrain", &p.filmGrain, 0, 50))
-               {
-                  SaveProfiles();
-               }
-            }
-            ImGui::EndTable();
-         }
+          }
+          if (!hasVideo)
+            ImGui::EndDisabled();
+        }
+        ImGui::EndTable();
       }
-      else
-      {
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                            "Extra FFmpeg Arguments");
-         ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::InputText("##Extra Args", extraBuf.data(), extraBuf.size()))
-         {
-            p.extraArgs = extraBuf.data();
-            SaveProfiles();
-         }
+    } else {
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+                         "Extra FFmpeg Arguments");
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      if (ImGui::InputText("##Extra Args", extraBuf.data(), extraBuf.size())) {
+        p.extraArgs = extraBuf.data();
+        SaveProfiles();
       }
-      ImGui::TextDisabled(
-          "Use standard FFmpeg flags (e.g. -x265-params key=val:key2=val2)");
+    }
+    ImGui::TextDisabled(
+        "Use standard FFmpeg flags (e.g. -x265-params key=val:key2=val2)");
 
-      ImGui::Spacing();
-      if (p.isDefault)
-      {
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f),
-                            "Default Profile [Startup]");
+    if (ImGui::BeginPopupModal("Confirm Remove Profile", NULL,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::Text("Are you sure you want to remove this profile?");
+      ImGui::Separator();
+      if (ImGui::Button("Yes", ImVec2(120, 0))) {
+        m_profiles.erase(m_profiles.begin() + m_activeProfileIdx);
+        if (m_activeProfileIdx >= m_profiles.size()) {
+          m_activeProfileIdx =
+              m_profiles.size() > 0 ? m_profiles.size() - 1 : 0;
+        }
+        ImGui::CloseCurrentPopup();
       }
-      else
-      {
-         if (ImGui::Button("Set as Default"))
-         {
-            for (auto& other : m_profiles)
-               other.isDefault = false;
-            p.isDefault = true;
-            SaveProfiles();
-         }
-      }
-
+      ImGui::SetItemDefaultFocus();
       ImGui::SameLine();
-      if (ImGui::Button("Remove Profile", ImVec2(120, 0)))
-      {
-         m_profiles.erase(m_profiles.begin() + m_activeProfileIdx);
-         if (m_activeProfileIdx >= m_profiles.size())
-            m_activeProfileIdx = m_profiles.size() - 1;
-         SaveProfiles();
+      if (ImGui::Button("No", ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
       }
-   }
-   else
-   {
-      ImGui::Spacing();
-      ImGui::TextColored(
-          ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
-          "Please select a profile from the left to begin editing.");
-      ImGui::TextDisabled("(If the list is empty, click 'Add Profile' above)");
-   }
-   ImGui::EndChild();
+      ImGui::EndPopup();
+    }
+  } else {
+    ImGui::Spacing();
+    ImGui::TextColored(
+        ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+        "Please select a profile from the left to begin editing.");
+    ImGui::TextDisabled("(If the list is empty, click 'Add Profile' above)");
+  }
+  ImGui::EndChild();
 }
 
-void UIManager::DrawJobQueue()
-{
-   ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "3. Execution");
+void UIManager::DrawJobQueue() {
+  ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "3. Execution");
 
-   const auto& jobs = m_jobManager.GetJobs();
+  const auto &jobs = m_jobManager.GetJobs();
 
-   bool anyRunning = false;
-   for (const auto& job : jobs)
-      if (!job->isComplete)
-         anyRunning = true;
+  bool anyRunning = false;
+  for (const auto &job : jobs)
+    if (!job->isComplete)
+      anyRunning = true;
 
-   bool canEnqueue = !m_referenceVideo.empty() && m_referenceMeta.valid;
-   if (!canEnqueue)
-      ImGui::BeginDisabled();
-   if (ImGui::Button("Enqueue Job", ImVec2(150, 30)))
-   {
-      if (m_activeProfileIdx >= 0 && m_activeProfileIdx < m_profiles.size())
-      {
-         const auto& p = m_profiles[m_activeProfileIdx];
-         m_jobManager.AddJob(m_referenceVideo, m_referenceMeta, p, p.segmentCount,
-                             p.segmentDuration);
+  bool canEnqueue = !m_referenceVideo.empty() && m_referenceMeta.valid;
+  if (!canEnqueue)
+    ImGui::BeginDisabled();
+  if (ImGui::Button("Enqueue Job", ImVec2(150, 30))) {
+    if (m_activeProfileIdx >= 0 && m_activeProfileIdx < m_profiles.size()) {
+      const auto &p = m_profiles[m_activeProfileIdx];
+      m_jobManager.AddJob(m_referenceVideo, m_referenceMeta, p, p.segmentCount,
+                          p.segmentDuration);
+    }
+  }
+  if (!canEnqueue)
+    ImGui::EndDisabled();
+
+  ImGui::SameLine();
+  bool hasCompleted = false;
+  for (const auto &job : jobs)
+    if (job->isComplete)
+      hasCompleted = true;
+
+  if (hasCompleted) {
+    if (ImGui::Button("Clear Results", ImVec2(110, 30))) {
+      m_jobManager.ClearCompletedJobs();
+    }
+  }
+
+  bool selectedIsValid = false;
+  bool selectedIsProcessing = false;
+  if (m_selectedJobId != -1) {
+    for (const auto &job : jobs) {
+      if (job->jobId == m_selectedJobId) {
+        selectedIsValid = true;
+        if (!job->isComplete && job->state != JobState::INIT) {
+          selectedIsProcessing = true;
+        }
+        break;
       }
-   }
-   if (!canEnqueue)
-      ImGui::EndDisabled();
+    }
+  }
 
-   if (m_selectedJobId != -1)
-   {
-      bool selectedIsProcessing = false;
-      for (const auto& job : jobs)
-      {
-         if (job->jobId == m_selectedJobId && !job->isComplete &&
-             job->state != JobState::INIT)
-         {
-            selectedIsProcessing = true;
-            break;
-         }
+  float rightAlignWidth =
+      160.0f + 150.0f + 150.0f + (ImGui::GetStyle().ItemSpacing.x * 2) + 20.0f;
+  float alignX = ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() -
+                 rightAlignWidth;
+  if (alignX > ImGui::GetCursorPosX()) {
+    ImGui::SameLine(alignX);
+  } else {
+    ImGui::SameLine();
+  }
+
+  if (!selectedIsValid || selectedIsProcessing)
+    ImGui::BeginDisabled();
+  if (ImGui::Button("Remove Selected Job", ImVec2(160, 30))) {
+    m_jobManager.RemoveJob(m_selectedJobId);
+    m_selectedJobId = -1;
+  }
+  if (!selectedIsValid || selectedIsProcessing)
+    ImGui::EndDisabled();
+
+  ImGui::SameLine();
+
+  if (!selectedIsProcessing)
+    ImGui::BeginDisabled();
+  if (ImGui::Button("Cancel Job", ImVec2(150, 30))) {
+    ImGui::OpenPopup("Confirm Cancel Job");
+  }
+  if (!selectedIsProcessing)
+    ImGui::EndDisabled();
+
+  ImGui::SameLine();
+  ImGui::Dummy(ImVec2(10, 0));
+  ImGui::SameLine();
+
+  if (!anyRunning)
+    ImGui::BeginDisabled();
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
+  if (ImGui::Button("Stop All Jobs", ImVec2(150, 30))) {
+    ImGui::OpenPopup("Confirm Stop All Jobs");
+  }
+  ImGui::PopStyleColor(3);
+  if (!anyRunning)
+    ImGui::EndDisabled();
+
+  // Modals
+  if (ImGui::BeginPopupModal("Confirm Stop All Jobs", NULL,
+                             ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("Are you sure you want to stop all active jobs?");
+    ImGui::Separator();
+    if (ImGui::Button("Yes", ImVec2(120, 0))) {
+      m_jobManager.StopAllJobs();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SetItemDefaultFocus();
+    ImGui::SameLine();
+    if (ImGui::Button("No", ImVec2(120, 0))) {
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  if (ImGui::BeginPopupModal("Confirm Cancel Job", NULL,
+                             ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("Are you sure you want to cancel the selected job?");
+    ImGui::Separator();
+    if (ImGui::Button("Yes", ImVec2(120, 0))) {
+      m_jobManager.CancelJob(m_selectedJobId);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SetItemDefaultFocus();
+    ImGui::SameLine();
+    if (ImGui::Button("No", ImVec2(120, 0))) {
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  ImGui::Spacing();
+  ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Job Queue");
+
+  if (ImGui::BeginTable("JobTable", 8,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable |
+                            ImGuiTableFlags_SizingStretchProp,
+                        ImVec2(0, 150))) {
+    ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 30);
+    ImGui::TableSetupColumn("Source File", ImGuiTableColumnFlags_WidthStretch,
+                            2.0f);
+    ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch,
+                            1.0f);
+    ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("Current CRF", ImGuiTableColumnFlags_WidthStretch,
+                            0.5f);
+    ImGui::TableSetupColumn("Target VMAF", ImGuiTableColumnFlags_WidthStretch,
+                            0.5f);
+    ImGui::TableSetupColumn("Recommended CRF",
+                            ImGuiTableColumnFlags_WidthStretch, 0.8f);
+    ImGui::TableSetupColumn("Est. Size", ImGuiTableColumnFlags_WidthStretch,
+                            0.5f);
+    ImGui::TableHeadersRow();
+
+    std::vector<int> uniqueIds;
+    for (const auto &j : jobs) {
+      if (std::find(uniqueIds.begin(), uniqueIds.end(), j->jobId) ==
+          uniqueIds.end()) {
+        uniqueIds.push_back(j->jobId);
+      }
+    }
+
+    for (int id : uniqueIds) {
+      std::shared_ptr<BenchmarkJob> latestIter = nullptr;
+      std::shared_ptr<BenchmarkJob> recIter = nullptr;
+      bool rowRunning = false;
+      for (const auto &j : jobs) {
+        if (j->jobId == id) {
+          if (!latestIter || j->iteration > latestIter->iteration)
+            latestIter = j;
+          if (j->isRecommended)
+            recIter = j;
+          if (!j->isComplete && j->state != JobState::INIT)
+            rowRunning = true;
+        }
+      }
+      if (!latestIter)
+        continue;
+
+      ImGui::TableNextRow();
+      bool isSelected = (id == m_selectedJobId);
+      if (isSelected)
+        ImGui::TableSetBgColor(
+            ImGuiTableBgTarget_RowBg0,
+            ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.5f, 0.3f)));
+      else if (rowRunning)
+        ImGui::TableSetBgColor(
+            ImGuiTableBgTarget_RowBg0,
+            ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.4f, 0.3f)));
+
+      ImGui::TableNextColumn();
+      char idLabel[32];
+      snprintf(idLabel, sizeof(idLabel), "%d##%d", id, id);
+      if (ImGui::Selectable(idLabel, isSelected,
+                            ImGuiSelectableFlags_SpanAllColumns)) {
+        m_selectedJobId = id;
       }
 
-      ImGui::SameLine();
-      if (selectedIsProcessing)
-         ImGui::BeginDisabled();
+      ImGui::TableNextColumn();
+      std::string fileName =
+          std::filesystem::path(latestIter->sourceFile).filename().string();
+      ImGui::Text("%s", fileName.c_str());
 
-      if (ImGui::Button("Remove Selected Job", ImVec2(160, 30)))
-      {
-         m_jobManager.RemoveJob(m_selectedJobId);
-         m_selectedJobId = -1;
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", latestIter->profile.name.c_str());
+
+      ImGui::TableNextColumn();
+      if (rowRunning) {
+        if (latestIter->state == JobState::EXTRACTING_SEGMENT)
+          ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f),
+                             "Extracting Seg %d/%d",
+                             latestIter->currentSegmentIdx + 1,
+                             (int)latestIter->segmentStartTimes.size());
+        else
+          ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f),
+                             "Running (Iter %d)", latestIter->iteration + 1);
+      } else if (latestIter->isCanceled)
+        ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "Canceled");
+      else if (latestIter->isComplete)
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Complete");
+      else
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Queued");
+
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", latestIter->currentCrf);
+
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", latestIter->profile.targetVmaf);
+
+      ImGui::TableNextColumn();
+      if (recIter)
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "CRF %d",
+                           recIter->currentCrf);
+      else
+        ImGui::Text("-");
+
+      ImGui::TableNextColumn();
+      DrawSizeColumn(recIter ? recIter->estimatedFullSize : 0.0f, false);
+    }
+    ImGui::EndTable();
+  }
+
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Spacing();
+  ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Iteration Details");
+
+  if (jobs.empty()) {
+    ImGui::TextDisabled("No active jobs.");
+    return;
+  }
+
+  auto TimeToSeconds = [](const std::string &t) -> float {
+    if (t.empty())
+      return 0.0f;
+    int h = 0, m = 0;
+    float s = 0.0f;
+    sscanf_s(t.c_str(), "%d:%d:%f", &h, &m, &s);
+    return h * 3600.0f + m * 60.0f + s;
+  };
+
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+  if (ImGui::BeginTable("LiveIterationTable", 8,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable |
+                            ImGuiTableFlags_SizingStretchProp |
+                            ImGuiTableFlags_ScrollY,
+                        ImVec2(0, 300))) {
+    ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 25);
+    ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch,
+                            1.25f);
+    ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+    ImGui::TableSetupColumn("CRF", ImGuiTableColumnFlags_WidthStretch, 0.4f);
+    ImGui::TableSetupColumn("Progress", ImGuiTableColumnFlags_WidthStretch,
+                            0.75f);
+    ImGui::TableSetupColumn("VMAF", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("Bitrate", ImGuiTableColumnFlags_WidthStretch,
+                            0.7f);
+    ImGui::TableSetupColumn("Est. Size", ImGuiTableColumnFlags_WidthStretch,
+                            0.9f);
+    ImGui::TableHeadersRow();
+
+    for (int i = 0; i < jobs.size(); ++i) {
+      auto &job = jobs[i];
+
+      // Filter: Only display elements that have broken out of INIT or are fully
+      // completed
+      if (job->state == JobState::INIT && !job->isComplete) {
+        continue;
       }
 
-      if (selectedIsProcessing)
-         ImGui::EndDisabled();
-   }
+      ImGui::PushID(i);
+      ImGui::TableNextRow();
 
-   if (anyRunning)
-   {
-      ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() -
-                      150);
-      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                            ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-                            ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
-      if (ImGui::Button("Stop All Jobs", ImVec2(150, 30)))
-      {
-         m_jobManager.StopAllJobs();
+      bool isSelected = (job->jobId == m_selectedJobId);
+      if (isSelected) {
+        ImGui::TableSetBgColor(
+            ImGuiTableBgTarget_RowBg0,
+            ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.5f, 0.3f)));
+      } else if (!job->isComplete && job->state != JobState::INIT) {
+        ImGui::TableSetBgColor(
+            ImGuiTableBgTarget_RowBg0,
+            ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.4f, 0.3f)));
       }
-      ImGui::PopStyleColor(3);
-   }
+      ImGui::AlignTextToFramePadding();
 
-   ImGui::SameLine();
-   bool hasCompleted = false;
-   for (const auto& job : jobs)
-      if (job->isComplete)
-         hasCompleted = true;
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", job->jobId);
 
-   if (hasCompleted)
-   {
-      if (ImGui::Button("Clear Results", ImVec2(110, 30)))
-      {
-         m_jobManager.ClearCompletedJobs();
-      }
-   }
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", job->profile.name.c_str());
 
-   ImGui::Spacing();
-   ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Job Queue");
+      bool running = !job->isComplete;
+      FFmpegProgress prog = job->runner->GetProgress();
 
-   if (ImGui::BeginTable("JobTable", 8,
-                         ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable |
-                         ImGuiTableFlags_SizingStretchProp,
-                         ImVec2(0, 150)))
-   {
-      ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 30);
-      ImGui::TableSetupColumn("Source File", ImGuiTableColumnFlags_WidthStretch,
-                              2.0f);
-      ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch,
-                              1.0f);
-      ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-      ImGui::TableSetupColumn("Current CRF", ImGuiTableColumnFlags_WidthStretch,
-                              0.5f);
-      ImGui::TableSetupColumn("Target VMAF", ImGuiTableColumnFlags_WidthStretch,
-                              0.5f);
-      ImGui::TableSetupColumn("Recommended CRF",
-                              ImGuiTableColumnFlags_WidthStretch, 0.8f);
-      ImGui::TableSetupColumn("Est. Size", ImGuiTableColumnFlags_WidthStretch,
-                              0.5f);
-      ImGui::TableHeadersRow();
-
-      std::vector<int> uniqueIds;
-      for (const auto& j : jobs)
-      {
-         if (std::find(uniqueIds.begin(), uniqueIds.end(), j->jobId) ==
-             uniqueIds.end())
-         {
-            uniqueIds.push_back(j->jobId);
-         }
+      ImGui::TableNextColumn();
+      if (running) {
+        if (job->state == JobState::INIT)
+          ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Queued...");
+        else if (job->state == JobState::EXTRACTING_SEGMENT)
+          ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f),
+                             "Extracting Seg %d/%d", job->currentSegmentIdx + 1,
+                             (int)job->segmentStartTimes.size());
+        else if (job->state == JobState::ENCODING_SEGMENT)
+          ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f),
+                             "Encoding Seg %d/%d", job->currentSegmentIdx + 1,
+                             job->segmentStartTimes.size());
+        else if (job->state == JobState::VMAFFING_SEGMENT)
+          ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+                             "Analyzing Seg %d/%d", job->currentSegmentIdx + 1,
+                             job->segmentStartTimes.size());
+        else if (job->state == JobState::CHECKING_SCORE)
+          ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Checking Avg...");
+        else
+          ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Initializing...");
+      } else {
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f),
+                           job->isRecommended ? "Recommended" : "Done");
       }
 
-      for (int id : uniqueIds)
-      {
-         std::shared_ptr<BenchmarkJob> latestIter = nullptr;
-         std::shared_ptr<BenchmarkJob> recIter = nullptr;
-         bool rowRunning = false;
-         for (const auto& j : jobs)
-         {
-            if (j->jobId == id)
-            {
-               if (!latestIter || j->iteration > latestIter->iteration)
-                  latestIter = j;
-               if (j->isRecommended)
-                  recIter = j;
-               if (!j->isComplete && j->state != JobState::INIT)
-                  rowRunning = true;
-            }
-         }
-         if (!latestIter)
-            continue;
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", job->currentCrf);
 
-         ImGui::TableNextRow();
-         bool isSelected = (id == m_selectedJobId);
-         if (isSelected)
-            ImGui::TableSetBgColor(
-                ImGuiTableBgTarget_RowBg0,
-                ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.5f, 0.3f)));
-         else if (rowRunning)
-            ImGui::TableSetBgColor(
-                ImGuiTableBgTarget_RowBg0,
-                ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.4f, 0.3f)));
+      ImGui::TableNextColumn();
+      if (running) {
+        float progressSec = TimeToSeconds(prog.time);
+        int pct = (int)((progressSec / job->segmentDuration) * 100.0f);
+        if (pct > 100)
+          pct = 100;
 
-         ImGui::TableNextColumn();
-         char idLabel[32];
-         snprintf(idLabel, sizeof(idLabel), "%d##%d", id, id);
-         if (ImGui::Selectable(idLabel, isSelected,
-                               ImGuiSelectableFlags_SpanAllColumns))
-         {
-            m_selectedJobId = id;
-         }
-
-         ImGui::TableNextColumn();
-         std::string fileName =
-            std::filesystem::path(latestIter->sourceFile).filename().string();
-         ImGui::Text("%s", fileName.c_str());
-
-         ImGui::TableNextColumn();
-         ImGui::Text("%s", latestIter->profile.name.c_str());
-
-         ImGui::TableNextColumn();
-         if (rowRunning)
-         {
-            if (latestIter->state == JobState::EXTRACTING_SEGMENT)
-               ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f),
-                                  "Extracting Seg %d/%d",
-                                  latestIter->currentSegmentIdx + 1,
-                                  (int)latestIter->segmentStartTimes.size());
-            else
-               ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f),
-                                  "Running (Iter %d)", latestIter->iteration + 1);
-         }
-         else if (latestIter->isComplete)
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Complete");
-         else
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Queued");
-
-         ImGui::TableNextColumn();
-         ImGui::Text("%d", latestIter->currentCrf);
-
-         ImGui::TableNextColumn();
-         ImGui::Text("%d", latestIter->profile.targetVmaf);
-
-         ImGui::TableNextColumn();
-         if (recIter)
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "CRF %d",
-                               recIter->currentCrf);
-         else
-            ImGui::Text("-");
-
-         ImGui::TableNextColumn();
-         DrawSizeColumn(recIter ? recIter->estimatedFullSize : 0.0f, false);
+        if (job->state == JobState::EXTRACTING_SEGMENT)
+          ImGui::Text("Prep: %d%%", pct);
+        else if (job->state == JobState::ENCODING_SEGMENT)
+          ImGui::Text("Encode: %d%%", pct);
+        else if (job->state == JobState::VMAFFING_SEGMENT)
+          ImGui::Text("VMAF: %d%%", pct);
+        else
+          ImGui::Text("Processing...");
+      } else {
+        ImGui::Text("-");
       }
-      ImGui::EndTable();
-   }
 
-   ImGui::Spacing();
-   ImGui::Separator();
-   ImGui::Spacing();
-   ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Iteration Details");
+      ImGui::TableNextColumn();
+      bool showTarget =
+          (job->searchActive || job->iteration > 0 || job->profile.autoCrf);
 
-   if (jobs.empty())
-   {
-      ImGui::TextDisabled("No active jobs.");
-      return;
-   }
-
-   auto TimeToSeconds = [](const std::string& t) -> float {
-      if (t.empty())
-         return 0.0f;
-      int h = 0, m = 0;
-      float s = 0.0f;
-      sscanf_s(t.c_str(), "%d:%d:%f", &h, &m, &s);
-      return h * 3600.0f + m * 60.0f + s;
-   };
-
-   ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
-   if (ImGui::BeginTable("LiveIterationTable", 8,
-                         ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable |
-                         ImGuiTableFlags_SizingStretchProp |
-                         ImGuiTableFlags_ScrollY,
-                         ImVec2(0, 300)))
-   {
-      ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 25);
-      ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch,
-                              1.25f);
-      ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.5f);
-      ImGui::TableSetupColumn("CRF", ImGuiTableColumnFlags_WidthStretch, 0.4f);
-      ImGui::TableSetupColumn("Progress", ImGuiTableColumnFlags_WidthStretch,
-                              0.75f);
-      ImGui::TableSetupColumn("VMAF", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-      ImGui::TableSetupColumn("Bitrate", ImGuiTableColumnFlags_WidthStretch,
-                              0.7f);
-      ImGui::TableSetupColumn("Est. Size", ImGuiTableColumnFlags_WidthStretch,
-                              0.9f);
-      ImGui::TableHeadersRow();
-
-      for (int i = 0; i < jobs.size(); ++i)
-      {
-         auto& job = jobs[i];
-
-         // Filter: Only display elements that have broken out of INIT or are fully
-         // completed
-         if (job->state == JobState::INIT && !job->isComplete)
-         {
-            continue;
-         }
-
-         ImGui::PushID(i);
-         ImGui::TableNextRow();
-
-         bool isSelected = (job->jobId == m_selectedJobId);
-         if (isSelected)
-         {
-            ImGui::TableSetBgColor(
-                ImGuiTableBgTarget_RowBg0,
-                ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.5f, 0.3f)));
-         }
-         else if (!job->isComplete && job->state != JobState::INIT)
-         {
-            ImGui::TableSetBgColor(
-                ImGuiTableBgTarget_RowBg0,
-                ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.4f, 0.3f)));
-         }
-         ImGui::AlignTextToFramePadding();
-
-         ImGui::TableNextColumn();
-         ImGui::Text("%d", job->jobId);
-
-         ImGui::TableNextColumn();
-         ImGui::Text("%s", job->profile.name.c_str());
-
-         bool running = !job->isComplete;
-         FFmpegProgress prog = job->runner->GetProgress();
-
-         ImGui::TableNextColumn();
-         if (running)
-         {
-            if (job->state == JobState::INIT)
-               ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Queued...");
-            else if (job->state == JobState::EXTRACTING_SEGMENT)
-               ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f),
-                                  "Extracting Seg %d/%d", job->currentSegmentIdx + 1,
-                                  (int)job->segmentStartTimes.size());
-            else if (job->state == JobState::ENCODING_SEGMENT)
-               ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f),
-                                  "Encoding Seg %d/%d", job->currentSegmentIdx + 1,
-                                  job->segmentStartTimes.size());
-            else if (job->state == JobState::VMAFFING_SEGMENT)
-               ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                                  "Analyzing Seg %d/%d", job->currentSegmentIdx + 1,
-                                  job->segmentStartTimes.size());
-            else if (job->state == JobState::CHECKING_SCORE)
-               ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Checking Avg...");
-            else
-               ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Initializing...");
-         }
-         else
-         {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f),
-                               job->isRecommended ? "Recommended" : "Done");
-         }
-
-         ImGui::TableNextColumn();
-         ImGui::Text("%d", job->currentCrf);
-
-         ImGui::TableNextColumn();
-         if (running)
-         {
-            float progressSec = TimeToSeconds(prog.time);
-            int pct = (int)((progressSec / job->segmentDuration) * 100.0f);
-            if (pct > 100)
-               pct = 100;
-
-            if (job->state == JobState::EXTRACTING_SEGMENT)
-               ImGui::Text("Prep: %d%%", pct);
-            else if (job->state == JobState::ENCODING_SEGMENT)
-               ImGui::Text("Encode: %d%%", pct);
-            else if (job->state == JobState::VMAFFING_SEGMENT)
-               ImGui::Text("VMAF: %d%%", pct);
-            else
-               ImGui::Text("Processing...");
-         }
-         else
-         {
-            ImGui::Text("-");
-         }
-
-         ImGui::TableNextColumn();
-         bool showTarget =
-            (job->searchActive || job->iteration > 0 || job->profile.autoCrf);
-
-         if (job->finalVMAF > 0.0f)
-         {
-            if (showTarget)
-               ImGui::Text("%.2f (Target: %d)", job->finalVMAF,
-                           job->profile.targetVmaf);
-            else
-               ImGui::Text("%.2f", job->finalVMAF);
-         }
-         else if (!job->segmentVMAFs.empty())
-         {
-            float sum = std::accumulate(job->segmentVMAFs.begin(),
-                                        job->segmentVMAFs.end(), 0.0f);
-            float avg = sum / job->segmentVMAFs.size();
-            if (showTarget)
-               ImGui::TextDisabled("Avg: %.2f (Target: %d)", avg,
-                                   job->profile.targetVmaf);
-            else
-               ImGui::TextDisabled("Avg: %.2f", avg);
-         }
-         else
-         {
-            if (showTarget)
-               ImGui::Text("- (Target: %d)", job->profile.targetVmaf);
-            else
-               ImGui::Text("-");
-         }
-
-         ImGui::TableNextColumn();
-         if (job->avgBitrate > 0.0f)
-         {
-            if (running)
-               ImGui::TextDisabled("Avg: %.1f", job->avgBitrate);
-            else
-               ImGui::Text("%.1f", job->avgBitrate);
-         }
-         else
-            ImGui::Text("%.1f", prog.bitrate);
-
-         ImGui::TableNextColumn();
-         DrawSizeColumn(job->estimatedFullSize, running);
-
-         ImGui::PopID();
+      if (job->finalVMAF > 0.0f) {
+        if (showTarget)
+          ImGui::Text("%.2f (Target: %d)", job->finalVMAF,
+                      job->profile.targetVmaf);
+        else
+          ImGui::Text("%.2f", job->finalVMAF);
+      } else if (!job->segmentVMAFs.empty()) {
+        float sum = std::accumulate(job->segmentVMAFs.begin(),
+                                    job->segmentVMAFs.end(), 0.0f);
+        float avg = sum / job->segmentVMAFs.size();
+        if (showTarget)
+          ImGui::TextDisabled("Avg: %.2f (Target: %d)", avg,
+                              job->profile.targetVmaf);
+        else
+          ImGui::TextDisabled("Avg: %.2f", avg);
+      } else {
+        if (showTarget)
+          ImGui::Text("- (Target: %d)", job->profile.targetVmaf);
+        else
+          ImGui::Text("-");
       }
-      ImGui::EndTable();
-      ImGui::PopStyleColor();
-   }
+
+      ImGui::TableNextColumn();
+      if (job->avgBitrate > 0.0f) {
+        if (running)
+          ImGui::TextDisabled("Avg: %.1f", job->avgBitrate);
+        else
+          ImGui::Text("%.1f", job->avgBitrate);
+      } else
+        ImGui::Text("%.1f", prog.bitrate);
+
+      ImGui::TableNextColumn();
+      DrawSizeColumn(job->estimatedFullSize, running);
+
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+    ImGui::PopStyleColor();
+  }
+}
+// Helper to run command silently (windows)
+#ifdef _WIN32
+static void RunCommandSilent(const std::string &cmd) {
+  STARTUPINFOA si;
+  PROCESS_INFORMATION pi;
+  ZeroMemory(&si, sizeof(si));
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_HIDE;
+  ZeroMemory(&pi, sizeof(pi));
+  if (CreateProcessA(NULL, (LPSTR)cmd.c_str(), NULL, NULL, FALSE,
+                     CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+  }
+}
+#endif
+
+void UIManager::GeneratePreview() {
+  if (m_previewLoading)
+    return;
+  if (m_activeProfileIdx < 0 || m_activeProfileIdx >= m_profiles.size())
+    return;
+  if (m_referenceVideo.empty() || !m_referenceMeta.valid)
+    return;
+
+  auto p = m_profiles[m_activeProfileIdx]; // copy
+  m_previewLoading = true;
+  m_previewReady = false;
+  m_previewFailed = false;
+  m_showPreviewPopup = true;
+  m_zoomLevel = 1.0f;
+  m_panX = 0.0f;
+  m_panY = 0.0f;
+
+  std::string refVideo = m_referenceVideo;
+  float midTime = m_referenceMeta.duration / 2.0f;
+
+  if (m_previewThread.joinable())
+    m_previewThread.join();
+
+  m_previewThread = std::thread([this, refVideo, midTime, p]() {
+    std::filesystem::create_directories("preview");
+    std::string outPath = "preview/frame.bmp";
+    std::error_code ec;
+    std::filesystem::remove(outPath, ec);
+
+    char vfArg[128];
+    snprintf(vfArg, sizeof(vfArg), "nlmeans=s=%f", p.nlmeansStrength);
+
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd),
+             "ffmpeg -y -ss %.2f -i \"%s\" -vframes 1 -vf \"%s\" \"%s\"",
+             midTime, refVideo.c_str(), vfArg, outPath.c_str());
+
+#ifdef _WIN32
+    RunCommandSilent(cmd);
+#else
+    system(cmd);
+#endif
+
+    if (std::filesystem::exists(outPath)) {
+      m_previewVideoPath = outPath;
+      m_previewReady = true;
+    } else {
+      m_previewFailed = true;
+    }
+    m_previewLoading = false;
+  });
+}
+
+unsigned int UIManager::LoadBMPTexture(const std::string &filepath,
+                                       int &outWidth, int &outHeight) {
+  return 0; // stub
 }
