@@ -19,6 +19,22 @@ using json = nlohmann::json;
 #include <commdlg.h>
 #endif
 
+namespace
+{
+   const auto UI_EXTRACT_COLOR = ImVec4(0.6f, 0.8f, 1.0f, 1.0f);
+   const auto UI_IN_PROG_COLOR = ImVec4(0.1f, 0.9f, 0.9f, 1.0f);
+   const auto UI_QUEUED_COLOR = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+   const auto UI_SUCESS_COLOR = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
+   const auto UI_CANCEL_COLOR = ImVec4(0.8f, 0.2f, 0.2f, 1.0f);
+   const auto UI_SELECTED_COLOR = ImVec4(0.2f, 0.2f, 0.5f, 0.3f);
+   const auto UI_ROW_RUNNING_COLOR = ImVec4(0.0f, 0.4f, 0.4f, 0.3f);
+   const auto UI_BUTTON_CANCEL_COLOR = ImVec4(0.8f, 0.2f, 0.2f, 1.0f);
+   const auto UI_BUTTON_CANCEL_HOVER_COLOR = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
+   const auto UI_BUTTON_CANCEL_ACTIVE_COLOR = ImVec4(0.7f, 0.1f, 0.1f, 1.0f);
+
+   const auto UI_BUTTON_SIZE = ImVec2(120, 30);
+};
+
 static void DrawSizeColumn(float sizeMB, bool running = false)
 {
    if (sizeMB > 0.0f)
@@ -97,8 +113,6 @@ void UIManager::LoadProfiles()
                p.extraArgs = item.value("extraArgs", "");
                p.bitDepth = item.value("bitDepth", "8-bit");
                p.isDefault = item.value("isDefault", false);
-               p.filmGrainDenoise = item.value("filmGrainDenoise", false);
-               p.nlmeansStrength = item.value("nlmeansStrength", 1.0f);
                p.svtTune = item.value("svtTune", 0);
                p.segmentCount = item.value("segmentCount", 4);
                p.segmentDuration = item.value("segmentDuration", 60.0f);
@@ -123,8 +137,6 @@ void UIManager::LoadProfiles()
                   p.extraArgs = item.value("extraArgs", "");
                   p.bitDepth = item.value("bitDepth", "8-bit");
                   p.isDefault = item.value("isDefault", false);
-                  p.filmGrainDenoise = item.value("filmGrainDenoise", false);
-                  p.nlmeansStrength = item.value("nlmeansStrength", 1.0f);
                   p.svtTune = item.value("svtTune", 0);
                   p.segmentCount = item.value("segmentCount", 4);
                   p.segmentDuration = item.value("segmentDuration", 60.0f);
@@ -154,8 +166,6 @@ void UIManager::SaveProfiles()
                            {"extraArgs", p.extraArgs},
                            {"bitDepth", p.bitDepth},
                            {"isDefault", p.isDefault},
-                           {"filmGrainDenoise", p.filmGrainDenoise},
-                           {"nlmeansStrength", p.nlmeansStrength},
                            {"svtTune", p.svtTune},
                            {"segmentCount", p.segmentCount},
                            {"segmentDuration", p.segmentDuration}});
@@ -249,7 +259,7 @@ void UIManager::DrawInputSection()
 {
    ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "1. Source Video");
 
-   if (ImGui::Button("Browse..."))
+   if (ImGui::Button("Browse...", UI_BUTTON_SIZE))
    {
       std::string selected = OpenFileDialog();
       if (!selected.empty())
@@ -280,13 +290,17 @@ void UIManager::DrawInputSection()
           ImVec4(0.8f, 0.4f, 0.4f, 1.0f),
           "Failed to read video metadata. Ensure ffprobe is in PATH.");
    }
+   else
+   {
+      ImGui::NewLine();
+   }
 }
 
 void UIManager::DrawProfileManager()
 {
    ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "2. Encoding Profiles");
 
-   if (ImGui::Button("Add Profile"))
+   if (ImGui::Button("Add Profile", UI_BUTTON_SIZE))
    {
       m_profiles.push_back({"New Profile", "libx264", "medium", DEFAULT_CRF, true,
                             96, "", "8-bit", false});
@@ -295,13 +309,14 @@ void UIManager::DrawProfileManager()
    }
    ImGui::SameLine();
 
-   if (!m_profilesDirty)
+   bool currentProfileDirty = m_profilesDirty;
+   if (!currentProfileDirty)
       ImGui::BeginDisabled();
-   if (ImGui::Button("Save Profiles"))
+   if (ImGui::Button("Save Profiles", UI_BUTTON_SIZE))
    {
       SaveProfiles();
    }
-   if (!m_profilesDirty)
+   if (!currentProfileDirty)
       ImGui::EndDisabled();
 
    if (m_activeProfileIdx >= 0 && m_activeProfileIdx < (int)m_profiles.size())
@@ -310,20 +325,22 @@ void UIManager::DrawProfileManager()
       ImGui::Dummy(ImVec2(10, 0));
       ImGui::SameLine();
 
-      if (m_profiles[m_activeProfileIdx].isDefault)
+      bool currentDefaultProfile = m_profiles[m_activeProfileIdx].isDefault;
+      if (currentDefaultProfile)
          ImGui::BeginDisabled();
-      if (ImGui::Button("Set as Default"))
+      if (ImGui::Button("Set as Default", UI_BUTTON_SIZE))
       {
          for (auto& other : m_profiles)
             other.isDefault = false;
          m_profiles[m_activeProfileIdx].isDefault = true;
          SaveProfiles();
       }
-      if (m_profiles[m_activeProfileIdx].isDefault)
+      if (currentDefaultProfile)
          ImGui::EndDisabled();
+
       ImGui::SameLine();
 
-      if (ImGui::Button("Remove Profile"))
+      if (ImGui::Button("Remove Profile", UI_BUTTON_SIZE))
       {
          ImGui::OpenPopup("Confirm Remove Profile");
       }
@@ -334,16 +351,15 @@ void UIManager::DrawProfileManager()
          ImGui::Separator();
 
          // Calculate the total width of both buttons + the spacing between them
-         float buttonWidth = 120.0f;
          float spacing = ImGui::GetStyle().ItemSpacing.x;
-         float totalButtonWidth = (buttonWidth * 2) + spacing;
+         float totalButtonWidth = (UI_BUTTON_SIZE.x * 2) + spacing;
 
          // Calculate the offset to center the buttons and set the cursor
          float cursorX = (ImGui::GetWindowSize().x - totalButtonWidth) * 0.5f;
          ImGui::SetCursorPosX(cursorX);
 
          // Draw the buttons
-         if (ImGui::Button("Yes", ImVec2(buttonWidth, 0)))
+         if (ImGui::Button("Yes", UI_BUTTON_SIZE))
          {
             m_profiles.erase(m_profiles.begin() + m_activeProfileIdx);
             if (m_activeProfileIdx >= (int)m_profiles.size())
@@ -357,7 +373,7 @@ void UIManager::DrawProfileManager()
 
          ImGui::SameLine();
 
-         if (ImGui::Button("No", ImVec2(buttonWidth, 0)))
+         if (ImGui::Button("No", UI_BUTTON_SIZE))
          {
             ImGui::CloseCurrentPopup();
          }
@@ -379,8 +395,6 @@ void UIManager::DrawProfileManager()
       {
          // Remove default spacing between the radio button and the text
          ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-
-         // Draw "(Default)" in green (RGBA: Red=0, Green=1, Blue=0, Alpha=1)
          ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "(Default)");
 
          // Optional: Make the "(Default)" text clickable so it acts like the radio button
@@ -547,81 +561,15 @@ void UIManager::DrawProfileManager()
       std::array<char, 256> extraBuf;
       snprintf(extraBuf.data(), extraBuf.size(), "%s", p.extraArgs.c_str());
 
-      if (p.codec == "libsvtav1")
+      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+                         "Extra FFmpeg Arguments");
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      if (ImGui::InputText("##Extra Args", extraBuf.data(), extraBuf.size()))
       {
-         if (ImGui::BeginTable("AV1ExtraControlsTable", 3))
-         {
-            ImGui::TableNextColumn();
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                               "Extra FFmpeg Arguments");
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::InputText("##Extra Args", extraBuf.data(),
-                                 extraBuf.size()))
-            {
-               p.extraArgs = extraBuf.data();
-               m_profilesDirty = true;
-            }
-
-            ImGui::TableNextColumn();
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                               "Film Grain Denoise");
-            if (ImGui::Checkbox("##FilmGrainDenoise", &p.filmGrainDenoise))
-            {
-               m_profilesDirty = true;
-            }
-
-            ImGui::TableNextColumn();
-            if (p.filmGrainDenoise)
-            {
-               ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                                  "Denoise Strength");
-               ImGui::SetNextItemWidth(-FLT_MIN);
-
-               int steps = (int)(p.nlmeansStrength * 2.0f);
-               if (steps < 1)
-                  steps = 1;
-               if (steps > 10)
-                  steps = 10;
-               char buf[32];
-               snprintf(buf, sizeof(buf), "%.1f", p.nlmeansStrength);
-               if (ImGui::SliderInt("##NLMeansStrength", &steps, 1, 10, buf))
-               {
-                  p.nlmeansStrength = steps * 0.5f;
-                  m_profilesDirty = true;
-               }
-
-               ImGui::Spacing();
-               bool hasVideo = !m_referenceVideo.empty() && m_referenceMeta.valid;
-               if (!hasVideo)
-                  ImGui::BeginDisabled();
-               if (m_previewLoading)
-               {
-                  ImGui::Button("Denoising...", ImVec2(-FLT_MIN, 0));
-               }
-               else
-               {
-                  if (ImGui::Button("Test Denoiser", ImVec2(-FLT_MIN, 0)))
-                  {
-                     GeneratePreview();
-                  }
-               }
-               if (!hasVideo)
-                  ImGui::EndDisabled();
-            }
-            ImGui::EndTable();
-         }
+         p.extraArgs = extraBuf.data();
+         m_profilesDirty = true;
       }
-      else
-      {
-         ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                            "Extra FFmpeg Arguments");
-         ImGui::SetNextItemWidth(-FLT_MIN);
-         if (ImGui::InputText("##Extra Args", extraBuf.data(), extraBuf.size()))
-         {
-            p.extraArgs = extraBuf.data();
-            m_profilesDirty = true;
-         }
-      }
+
       ImGui::TextDisabled(
           "Use standard FFmpeg flags (e.g. -x265-params key=val:key2=val2)");
 
@@ -651,7 +599,7 @@ void UIManager::DrawJobQueue()
    bool canEnqueue = !m_referenceVideo.empty() && m_referenceMeta.valid;
    if (!canEnqueue)
       ImGui::BeginDisabled();
-   if (ImGui::Button("Enqueue Job", ImVec2(150, 30)))
+   if (ImGui::Button("Enqueue Job", UI_BUTTON_SIZE))
    {
       if (m_activeProfileIdx >= 0 && m_activeProfileIdx < m_profiles.size())
       {
@@ -689,14 +637,15 @@ void UIManager::DrawJobQueue()
             if (!job->isComplete && job->state != JobState::INIT)
             {
                selectedIsProcessing = true;
+               break;
             }
-            break;
          }
       }
    }
 
+   auto dummyButtonSize = ImVec2(10.0f, 0.0f);
    float rightAlignWidth =
-      160.0f + 150.0f + 150.0f + (ImGui::GetStyle().ItemSpacing.x * 2) + 20.0f;
+      (UI_BUTTON_SIZE.x * 3) + (ImGui::GetStyle().ItemSpacing.x * 2) + dummyButtonSize.x * 2.0f;
    float alignX = ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() -
       rightAlignWidth;
    if (alignX > ImGui::GetCursorPosX())
@@ -710,7 +659,7 @@ void UIManager::DrawJobQueue()
 
    if (!selectedIsValid || selectedIsProcessing)
       ImGui::BeginDisabled();
-   if (ImGui::Button("Remove Selected Job", ImVec2(160, 30)))
+   if (ImGui::Button("Remove Job", UI_BUTTON_SIZE))
    {
       m_jobManager.RemoveJob(m_selectedJobId);
       m_selectedJobId = -1;
@@ -722,23 +671,27 @@ void UIManager::DrawJobQueue()
 
    if (!selectedIsProcessing)
       ImGui::BeginDisabled();
-   if (ImGui::Button("Cancel Job", ImVec2(150, 30)))
+   ImGui::PushStyleColor(ImGuiCol_Button, UI_BUTTON_CANCEL_COLOR);
+   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, UI_BUTTON_CANCEL_HOVER_COLOR);
+   ImGui::PushStyleColor(ImGuiCol_ButtonActive, UI_BUTTON_CANCEL_ACTIVE_COLOR);
+   if (ImGui::Button("Cancel Job", UI_BUTTON_SIZE))
    {
       ImGui::OpenPopup("Confirm Cancel Job");
    }
+   ImGui::PopStyleColor(3);
    if (!selectedIsProcessing)
       ImGui::EndDisabled();
 
    ImGui::SameLine();
-   ImGui::Dummy(ImVec2(10, 0));
+   ImGui::Dummy(dummyButtonSize);
    ImGui::SameLine();
 
    if (!anyRunning)
       ImGui::BeginDisabled();
-   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
-   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-   ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
-   if (ImGui::Button("Stop All Jobs", ImVec2(150, 30)))
+   ImGui::PushStyleColor(ImGuiCol_Button, UI_BUTTON_CANCEL_COLOR);
+   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, UI_BUTTON_CANCEL_HOVER_COLOR);
+   ImGui::PushStyleColor(ImGuiCol_ButtonActive, UI_BUTTON_CANCEL_ACTIVE_COLOR);
+   if (ImGui::Button("Stop All Jobs", UI_BUTTON_SIZE))
    {
       ImGui::OpenPopup("Confirm Stop All Jobs");
    }
@@ -753,16 +706,15 @@ void UIManager::DrawJobQueue()
       ImGui::Separator();
 
       // 1. Calculate the total width of both buttons + the spacing between them
-      float buttonWidth = 120.0f;
       float spacing = ImGui::GetStyle().ItemSpacing.x;
-      float totalButtonWidth = (buttonWidth * 2) + spacing;
+      float totalButtonWidth = (UI_BUTTON_SIZE.x * 2.0f) + spacing;
 
       // 2. Calculate the offset to center the buttons and set the cursor
       float cursorX = (ImGui::GetWindowSize().x - totalButtonWidth) * 0.5f;
       ImGui::SetCursorPosX(cursorX);
 
       // 3. Draw the buttons
-      if (ImGui::Button("Yes", ImVec2(buttonWidth, 0)))
+      if (ImGui::Button("Yes", UI_BUTTON_SIZE))
       {
          m_jobManager.StopAllJobs();
          ImGui::CloseCurrentPopup();
@@ -771,7 +723,7 @@ void UIManager::DrawJobQueue()
 
       ImGui::SameLine();
 
-      if (ImGui::Button("No", ImVec2(buttonWidth, 0)))
+      if (ImGui::Button("No", UI_BUTTON_SIZE))
       {
          ImGui::CloseCurrentPopup();
       }
@@ -794,7 +746,7 @@ void UIManager::DrawJobQueue()
       ImGui::SetCursorPosX(cursorX);
 
       // Draw the buttons
-      if (ImGui::Button("Yes", ImVec2(buttonWidth, 0)))
+      if (ImGui::Button("Yes", UI_BUTTON_SIZE))
       {
          m_jobManager.CancelJob(m_selectedJobId);
          ImGui::CloseCurrentPopup();
@@ -803,7 +755,7 @@ void UIManager::DrawJobQueue()
 
       ImGui::SameLine();
 
-      if (ImGui::Button("No", ImVec2(buttonWidth, 0)))
+      if (ImGui::Button("No", UI_BUTTON_SIZE))
       {
          ImGui::CloseCurrentPopup();
       }
@@ -870,11 +822,11 @@ void UIManager::DrawJobQueue()
          if (isSelected)
             ImGui::TableSetBgColor(
                 ImGuiTableBgTarget_RowBg0,
-                ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.5f, 0.3f)));
+                ImGui::GetColorU32(UI_SELECTED_COLOR));
          else if (rowRunning)
             ImGui::TableSetBgColor(
                 ImGuiTableBgTarget_RowBg0,
-                ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.4f, 0.3f)));
+                ImGui::GetColorU32(UI_ROW_RUNNING_COLOR));
 
          ImGui::TableNextColumn();
          char idLabel[32];
@@ -897,20 +849,20 @@ void UIManager::DrawJobQueue()
          if (rowRunning)
          {
             if (latestIter->state == JobState::EXTRACTING_SEGMENT)
-               ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f),
+               ImGui::TextColored(UI_EXTRACT_COLOR,
                                   "Extracting Seg %d/%d",
                                   latestIter->currentSegmentIdx + 1,
                                   (int)latestIter->segmentStartTimes.size());
             else
-               ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f),
+               ImGui::TextColored(UI_IN_PROG_COLOR,
                                   "Running (Iter %d)", latestIter->iteration + 1);
          }
          else if (latestIter->isCanceled)
-            ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "Canceled");
+            ImGui::TextColored(UI_CANCEL_COLOR, "Canceled");
          else if (latestIter->isComplete)
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Complete");
+            ImGui::TextColored(UI_SUCESS_COLOR, "Complete");
          else
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Queued");
+            ImGui::TextColored(UI_QUEUED_COLOR, "Queued");
 
          ImGui::TableNextColumn();
          ImGui::Text("%d", latestIter->currentCrf);
@@ -920,7 +872,7 @@ void UIManager::DrawJobQueue()
 
          ImGui::TableNextColumn();
          if (recIter)
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "CRF %d",
+            ImGui::TextColored(UI_SUCESS_COLOR, "CRF %d",
                                recIter->currentCrf);
          else
             ImGui::Text("-");
@@ -991,13 +943,13 @@ void UIManager::DrawJobQueue()
          {
             ImGui::TableSetBgColor(
                 ImGuiTableBgTarget_RowBg0,
-                ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.5f, 0.3f)));
+                ImGui::GetColorU32(UI_SELECTED_COLOR));
          }
          else if (!job->isComplete && job->state != JobState::INIT)
          {
             ImGui::TableSetBgColor(
                 ImGuiTableBgTarget_RowBg0,
-                ImGui::GetColorU32(ImVec4(0.0f, 0.4f, 0.4f, 0.3f)));
+                ImGui::GetColorU32(UI_ROW_RUNNING_COLOR));
          }
          ImGui::AlignTextToFramePadding();
 
@@ -1014,28 +966,32 @@ void UIManager::DrawJobQueue()
          if (running)
          {
             if (job->state == JobState::INIT)
-               ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Queued...");
+               ImGui::TextColored(UI_QUEUED_COLOR, "Queued...");
             else if (job->state == JobState::EXTRACTING_SEGMENT)
-               ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f),
+               ImGui::TextColored(UI_EXTRACT_COLOR,
                                   "Extracting Seg %d/%d", job->currentSegmentIdx + 1,
                                   (int)job->segmentStartTimes.size());
             else if (job->state == JobState::ENCODING_SEGMENT)
-               ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f),
+               ImGui::TextColored(UI_IN_PROG_COLOR,
                                   "Encoding Seg %d/%d", job->currentSegmentIdx + 1,
                                   job->segmentStartTimes.size());
             else if (job->state == JobState::VMAFFING_SEGMENT)
-               ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+               ImGui::TextColored(UI_IN_PROG_COLOR,
                                   "Analyzing Seg %d/%d", job->currentSegmentIdx + 1,
                                   job->segmentStartTimes.size());
             else if (job->state == JobState::CHECKING_SCORE)
-               ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Checking Avg...");
+               ImGui::TextColored(UI_EXTRACT_COLOR, "Checking Avg...");
             else
-               ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Initializing...");
+               ImGui::TextColored(UI_IN_PROG_COLOR, "Initializing...");
          }
          else
          {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f),
-                               job->isRecommended ? "Recommended" : "Done");
+            if (job->isCanceled)
+               ImGui::TextColored(UI_CANCEL_COLOR, "Canceled - Seg %d/%d Completed",
+                                  job->currentSegmentIdx + 1, (int)job->segmentStartTimes.size());
+            else
+               ImGui::TextColored(UI_SUCESS_COLOR,
+                                  job->isRecommended ? "Recommended" : "Done");
          }
 
          ImGui::TableNextColumn();
@@ -1134,66 +1090,3 @@ static void RunCommandSilent(const std::string& cmd)
    }
 }
 #endif
-
-void UIManager::GeneratePreview()
-{
-   if (m_previewLoading)
-      return;
-   if (m_activeProfileIdx < 0 || m_activeProfileIdx >= m_profiles.size())
-      return;
-   if (m_referenceVideo.empty() || !m_referenceMeta.valid)
-      return;
-
-   auto p = m_profiles[m_activeProfileIdx]; // copy
-   m_previewLoading = true;
-   m_previewReady = false;
-   m_previewFailed = false;
-   m_showPreviewPopup = true;
-   m_zoomLevel = 1.0f;
-   m_panX = 0.0f;
-   m_panY = 0.0f;
-
-   std::string refVideo = m_referenceVideo;
-   float midTime = m_referenceMeta.duration / 2.0f;
-
-   if (m_previewThread.joinable())
-      m_previewThread.join();
-
-   m_previewThread = std::thread([this, refVideo, midTime, p]() {
-      std::filesystem::create_directories("preview");
-      std::string outPath = "preview/frame.bmp";
-      std::error_code ec;
-      std::filesystem::remove(outPath, ec);
-
-      char vfArg[128];
-      snprintf(vfArg, sizeof(vfArg), "nlmeans=s=%f", p.nlmeansStrength);
-
-      char cmd[1024];
-      snprintf(cmd, sizeof(cmd),
-               "ffmpeg -y -ss %.2f -i \"%s\" -vframes 1 -vf \"%s\" \"%s\"",
-               midTime, refVideo.c_str(), vfArg, outPath.c_str());
-
-#ifdef _WIN32
-      RunCommandSilent(cmd);
-#else
-      system(cmd);
-#endif
-
-      if (std::filesystem::exists(outPath))
-      {
-         m_previewVideoPath = outPath;
-         m_previewReady = true;
-      }
-      else
-      {
-         m_previewFailed = true;
-      }
-      m_previewLoading = false;
-   });
-}
-
-unsigned int UIManager::LoadBMPTexture(const std::string& filepath,
-                                       int& outWidth, int& outHeight)
-{
-   return 0; // stub
-}

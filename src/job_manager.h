@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 inline constexpr int DEFAULT_CRF = 20;
@@ -25,8 +26,6 @@ struct EncodeProfile
    float segmentDuration = 60.0f;
 
    // SVT-AV1 specific
-   bool filmGrainDenoise = false;
-   float nlmeansStrength = 1.0f;
    int svtTune = 0; // 0=VQ, 1=PSNR, 2=SSIM
 };
 
@@ -131,6 +130,12 @@ public:
    }
 
 private:
+   std::string GenerateTempFileName(const std::shared_ptr<BenchmarkJob>& job, std::string_view header, bool includeSegment);
+   void ProcessInit(std::shared_ptr<BenchmarkJob>& job);
+   void ProcessExtractingSegment(std::shared_ptr<BenchmarkJob>& job);
+   void ProcessEncodingSegment(std::shared_ptr<BenchmarkJob>& job);
+   void ProcessVmaffingSegment(std::shared_ptr<BenchmarkJob>& job);
+   void ProcessCheckScore(std::shared_ptr<BenchmarkJob>& job);
    void ProcessJob(std::shared_ptr<BenchmarkJob>& job);
 
    std::vector<std::shared_ptr<BenchmarkJob>> m_jobs;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -56,6 +57,7 @@ public:
    static VideoMetadata GetMetadata(const std::string& filepath);
 
 private:
+   static bool ExecuteCommand(const std::string& command, std::function<bool(const char* data, size_t size)> onChunk);
    void RunThread(std::string command);
    void ParseLogLine(const std::string& line);
 

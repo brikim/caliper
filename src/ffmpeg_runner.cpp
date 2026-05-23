@@ -20,8 +20,7 @@ using json = nlohmann::json;
 #endif
 
 FFmpegRunner::FFmpegRunner()
-{
-}
+{}
 
 FFmpegRunner::~FFmpegRunner()
 {
@@ -69,8 +68,11 @@ void FFmpegRunner::Stop()
    {
       m_stopRequested = true;
 #ifdef _WIN32
-      // Forcefully kill ffmpeg instances on Windows to unblock popen
-      system("taskkill /IM ffmpeg.exe /F /T > nul 2>&1");
+      // Forcefully kill ffmpeg instances on Windows to unblock ReadFile.
+      // We use ExecuteCommand to avoid the visible console window that system() creates.
+      ExecuteCommand("taskkill /IM ffmpeg.exe /F /T", [](const char*, size_t) -> bool {
+         return true; // Ignore the output, just let the command finish
+      });
 #endif
    }
    if (m_worker.joinable())
@@ -107,20 +109,15 @@ float FFmpegRunner::GetVMAFScore() const
    return m_vmafScore;
 }
 
-void FFmpegRunner::RunThread(std::string command)
+bool FFmpegRunner::ExecuteCommand(const std::string& command, std::function<bool(const char* data, size_t size)> onChunk)
 {
 #ifdef _WIN32
-   // Windows implementation using CreateProcess to hide the window
    HANDLE hReadPipe, hWritePipe;
    SECURITY_ATTRIBUTES saAttr = {sizeof(SECURITY_ATTRIBUTES), NULL, TRUE};
 
    if (!CreatePipe(&hReadPipe, &hWritePipe, &saAttr, 0))
-   {
-      m_running = false;
-      return;
-   }
+      return false;
 
-   // Ensure the reading handle to the pipe for STDOUT is not inherited
    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
 
    STARTUPINFOA si = {sizeof(STARTUPINFOA)};
@@ -132,7 +129,6 @@ void FFmpegRunner::RunThread(std::string command)
 
    PROCESS_INFORMATION pi = {0};
 
-   // Use cmd /c to mimic popen behavior (handles PATH and shell features)
    std::string shellCmd = "cmd.exe /c \"" + command + "\"";
    std::vector<char> cmdBuffer(shellCmd.begin(), shellCmd.end());
    cmdBuffer.push_back('\0');
@@ -142,29 +138,67 @@ void FFmpegRunner::RunThread(std::string command)
    {
       CloseHandle(hReadPipe);
       CloseHandle(hWritePipe);
-      m_running = false;
-      return;
+      return false;
    }
 
-   CloseHandle(hWritePipe); // Close the write end in the parent process
+   CloseHandle(hWritePipe);
 
    std::array<char, 4096> buffer;
    DWORD bytesRead;
-   std::string accumulated;
 
-   while (
-       ReadFile(hReadPipe, buffer.data(), buffer.size() - 1, &bytesRead, NULL) &&
-       bytesRead > 0)
+   while (ReadFile(hReadPipe, buffer.data(), buffer.size(), &bytesRead, NULL) && bytesRead > 0)
    {
-      if (m_stopRequested)
+      // If the callback returns false, we kill the process early
+      if (!onChunk(buffer.data(), static_cast<size_t>(bytesRead)))
       {
          TerminateProcess(pi.hProcess, 0);
          break;
       }
+   }
 
-      buffer[bytesRead] = '\0';
-      accumulated += buffer.data();
+   WaitForSingleObject(pi.hProcess, INFINITE);
+   CloseHandle(pi.hProcess);
+   CloseHandle(pi.hThread);
+   CloseHandle(hReadPipe);
+   return true;
 
+#else
+   FILE* pipe = popen(command.c_str(), "r");
+   if (!pipe)
+      return false;
+
+   std::array<char, 4096> buffer;
+   while (true)
+   {
+      size_t bytesRead = fread(buffer.data(), 1, buffer.size(), pipe);
+      if (bytesRead > 0)
+      {
+         if (!onChunk(buffer.data(), bytesRead))
+            break;
+      }
+      else if (feof(pipe) || ferror(pipe))
+      {
+         break;
+      }
+   }
+
+   pclose(pipe);
+   return true;
+#endif
+}
+
+void FFmpegRunner::RunThread(std::string command)
+{
+   std::string accumulated;
+
+   ExecuteCommand(command, [this, &accumulated](const char* data, size_t size) -> bool {
+      // Return false to tell ExecuteCommand to terminate the process
+      if (m_stopRequested)
+         return false;
+
+      accumulated.append(data, size);
+
+      // Process complete lines
       while (true)
       {
          size_t pos_n = accumulated.find('\n');
@@ -193,44 +227,9 @@ void FFmpegRunner::RunThread(std::string command)
             ParseLogLine(line);
          }
       }
-   }
 
-   WaitForSingleObject(pi.hProcess, INFINITE);
-   CloseHandle(pi.hProcess);
-   CloseHandle(pi.hThread);
-   CloseHandle(hReadPipe);
-
-#else
-   // Linux/Unix implementation using popen
-   FILE* pipe = popen(command.c_str(), "r");
-   if (!pipe)
-   {
-      m_running = false;
-      return;
-   }
-
-   char buffer[1024];
-   while (fgets(buffer, sizeof(buffer), pipe) != nullptr)
-   {
-      if (m_stopRequested)
-      {
-         break;
-      }
-
-      std::string line(buffer);
-      if (!line.empty() && line.back() == '\n')
-         line.pop_back();
-      if (!line.empty() && line.back() == '\r')
-         line.pop_back();
-
-      {
-         std::lock_guard<std::mutex> lock(m_logMutex);
-         m_logQueue.push(line);
-      }
-      ParseLogLine(line);
-   }
-   pclose(pipe);
-#endif
+      return true; // Keep reading
+   });
 
    m_running = false;
 }
@@ -285,22 +284,16 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
 {
    VideoMetadata meta;
 
-   // Build ffprobe command to output json
    std::string cmd =
       "ffprobe -v quiet -print_format json -show_format -show_streams \"" +
       filepath + "\"";
 
-   FILE* pipe = popen(cmd.c_str(), "r");
-   if (!pipe)
-      return meta;
-
    std::string result = "";
-   std::array<char, 128> buffer;
-   while (fgets(buffer.data(), buffer.size(), pipe) != nullptr)
-   {
-      result += buffer.data();
-   }
-   pclose(pipe);
+
+   ExecuteCommand(cmd, [&result](const char* data, size_t size) -> bool {
+      result.append(data, size);
+      return true; // Keep reading until EOF
+   });
 
    if (result.empty())
       return meta;
