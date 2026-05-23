@@ -49,8 +49,7 @@ namespace
 
 WindowManager::WindowManager(int width, int height, std::string_view title)
    : m_width(width), m_height(height), m_title(title)
-{
-}
+{}
 
 WindowManager::~WindowManager()
 {
@@ -111,8 +110,6 @@ void WindowManager::SetupImGui()
    ImGuiIO& io = ImGui::GetIO();
    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-   io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 }
 
 void WindowManager::LoadFonts()
@@ -195,8 +192,6 @@ void WindowManager::SetupTheme()
    colors[ImGuiCol_TabActive] = ImVec4(0.14f, 0.42f, 0.56f, 1.00f);
    colors[ImGuiCol_TabUnfocused] = ImVec4(0.08f, 0.18f, 0.25f, 1.00f);
    colors[ImGuiCol_TabUnfocusedActive] = ImVec4(0.10f, 0.30f, 0.40f, 1.00f);
-   colors[ImGuiCol_DockingPreview] = ImVec4(0.18f, 0.65f, 0.75f, 0.70f);
-   colors[ImGuiCol_DockingEmptyBg] = ImVec4(0.06f, 0.07f, 0.09f, 1.00f);
    colors[ImGuiCol_PlotLines] = ImVec4(0.18f, 0.75f, 0.85f, 1.00f);
    colors[ImGuiCol_PlotLinesHovered] = ImVec4(0.22f, 0.90f, 1.00f, 1.00f);
    colors[ImGuiCol_PlotHistogram] = ImVec4(0.18f, 0.65f, 0.75f, 1.00f);
@@ -211,13 +206,6 @@ void WindowManager::SetupTheme()
    colors[ImGuiCol_NavHighlight] = ImVec4(0.18f, 0.75f, 0.85f, 1.00f);
    colors[ImGuiCol_Text] = ImVec4(0.90f, 0.92f, 0.95f, 1.00f);
    colors[ImGuiCol_TextDisabled] = ImVec4(0.40f, 0.45f, 0.55f, 1.00f);
-
-   ImGuiIO& io = ImGui::GetIO();
-   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-   {
-      style.WindowRounding = 8.0f;
-      colors[ImGuiCol_WindowBg].w = 1.0f;
-   }
 }
 
 bool WindowManager::ShouldClose() const
@@ -243,15 +231,6 @@ void WindowManager::EndFrame()
    glClear(GL_COLOR_BUFFER_BIT);
 
    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-   ImGuiIO& io = ImGui::GetIO();
-   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-   {
-      GLFWwindow* backup_current_context = glfwGetCurrentContext();
-      ImGui::UpdatePlatformWindows();
-      ImGui::RenderPlatformWindowsDefault();
-      glfwMakeContextCurrent(backup_current_context);
-   }
 
    glfwSwapBuffers(m_window);
 }

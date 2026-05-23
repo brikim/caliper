@@ -29,19 +29,9 @@ FetchContent_MakeAvailable(glfw)
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        v1.90.4-docking # Use docking branch for modern UI features
+    GIT_TAG        v1.92.8
 )
 FetchContent_MakeAvailable(imgui)
-
-# ------------------------------------------------------------------------------
-# Fetch ImPlot
-# ------------------------------------------------------------------------------
-FetchContent_Declare(
-    implot
-    GIT_REPOSITORY https://github.com/epezent/implot.git
-    GIT_TAG        v0.16
-)
-FetchContent_MakeAvailable(implot)
 
 # ------------------------------------------------------------------------------
 # Fetch nlohmann_json
@@ -67,13 +57,6 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
 
-set(IMPLOT_DIR ${implot_SOURCE_DIR})
-set(IMPLOT_SOURCES
-    ${IMPLOT_DIR}/implot.cpp
-    ${IMPLOT_DIR}/implot_items.cpp
-    ${IMPLOT_DIR}/implot_demo.cpp
-)
-
 # ------------------------------------------------------------------------------
 # Executable and Linking
 # ------------------------------------------------------------------------------
@@ -89,7 +72,7 @@ if(WIN32)
     list(APPEND SOURCES resources/app.rc)
 endif()
 
-add_executable(${PROJECT_NAME} WIN32 ${SOURCES} ${IMGUI_SOURCES} ${IMPLOT_SOURCES})
+add_executable(${PROJECT_NAME} WIN32 ${SOURCES} ${IMGUI_SOURCES})
 
 # OpenGL dependency
 find_package(OpenGL REQUIRED)
@@ -98,7 +81,6 @@ target_include_directories(Caliper PRIVATE
     src
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${IMPLOT_DIR}
 )
 
 target_link_libraries(Caliper PRIVATE
