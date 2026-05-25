@@ -54,16 +54,15 @@ public:
    float GetVMAFScore() const;
 
    // Fetch video metadata synchronously using ffprobe
-   static VideoMetadata GetMetadata(const std::string& filepath);
+   VideoMetadata GetMetadata(const std::string& filepath);
 
 private:
-   static bool ExecuteCommand(const std::string& command, std::function<bool(const char* data, size_t size)> onChunk);
-   void RunThread(std::string command);
+   bool ExecuteCommand(const std::string& command, std::function<bool(const char* data, size_t size)> onChunk);
+   void RunThread(std::stop_token stoken, std::string command);
    void ParseLogLine(const std::string& line);
 
-   std::thread m_worker;
+   std::jthread m_worker;
    std::atomic<bool> m_running{false};
-   std::atomic<bool> m_stopRequested{false};
 
    mutable std::mutex m_logMutex;
    std::queue<std::string> m_logQueue;
@@ -71,4 +70,6 @@ private:
    mutable std::mutex m_progressMutex;
    FFmpegProgress m_progress;
    std::atomic<float> m_vmafScore{-1.0f};
+
+   std::atomic<void*> m_processHandle;
 };

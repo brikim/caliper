@@ -29,8 +29,6 @@ public:
 
 private:
    void SetupImGui();
-   void SetupTheme();
-   void LoadFonts();
 
    GLFWwindow* m_window = nullptr;
    int m_width;

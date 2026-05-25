@@ -4,8 +4,8 @@
 #include <cmath>
 #include <filesystem>
 #include <format>
-#include <functional>
 #include <numeric>
+#include <ranges>
 #include <thread>
 
 #ifdef _WIN32
@@ -37,14 +37,11 @@ void JobManager::Update()
    // 1. Append any newly spawned iteration jobs and sort BEFORE processing
    if (!m_pendingJobs.empty())
    {
-      for (auto& j : m_pendingJobs)
-      {
-         m_jobs.push_back(j);
-      }
+      m_jobs.insert(m_jobs.end(), m_pendingJobs.begin(), m_pendingJobs.end());
       m_pendingJobs.clear();
 
-      std::stable_sort(m_jobs.begin(), m_jobs.end(),
-                       [](const auto& a, const auto& b) {
+      // Sort only once after the insertion
+      std::stable_sort(m_jobs.begin(), m_jobs.end(), [](const auto& a, const auto& b) {
          if (a->jobId != b->jobId)
             return a->jobId < b->jobId;
          return a->iteration < b->iteration;
@@ -269,7 +266,8 @@ void JobManager::CancelJob(int jobId)
    }
 }
 
-std::string JobManager::GenerateTempFileName(const std::shared_ptr<BenchmarkJob>& job, std::string_view header, bool includeSegment)
+std::string JobManager::GenerateTempFileName(const std::shared_ptr<BenchmarkJob>& job,
+                                             std::string_view header, bool includeSegment)
 {
    if (includeSegment)
    {
@@ -381,20 +379,22 @@ void JobManager::ProcessEncodingSegment(std::shared_ptr<BenchmarkJob>& job)
 
          if (!extra.empty())
          {
+            constexpr std::string_view svtParamKey = "-svtav1-params";
+            auto paramLocation = extra.find(svtParamKey);
+
             // If user put raw colon-delimited params (no leading dash), merge
             // them
-            if (extra.find("-svtav1-params") == std::string::npos &&
+            if (paramLocation == std::string::npos &&
                 extra[0] != '-')
             {
                svtParams += ":" + extra;
                extra = "";
             }
             // If user manually specified -svtav1-params, merge the values
-            else if (extra.find("-svtav1-params") != std::string::npos)
+            else if (paramLocation != std::string::npos && (paramLocation + svtParamKey.length()) <= extra.size())
             {
                // Extract the value after -svtav1-params and merge
-               size_t paramPos = extra.find("-svtav1-params");
-               size_t valueStart = paramPos + 14; // length of "-svtav1-params"
+               size_t valueStart = paramLocation + svtParamKey.length();
                while (valueStart < extra.size() &&
                       (extra[valueStart] == ' ' || extra[valueStart] == '"'))
                   valueStart++;
@@ -410,7 +410,7 @@ void JobManager::ProcessEncodingSegment(std::shared_ptr<BenchmarkJob>& job)
                while (valueEnd < extra.size() &&
                       (extra[valueEnd] == '"' || extra[valueEnd] == ' '))
                   valueEnd++;
-               extra = extra.substr(0, paramPos) + extra.substr(valueEnd);
+               extra = extra.substr(0, paramLocation) + extra.substr(valueEnd);
             }
          }
 
@@ -641,7 +641,7 @@ void JobManager::ProcessCheckScore(std::shared_ptr<BenchmarkJob>& job)
    {
       // No bracket yet — use a conservative initial step
       // AV1 CRF range is wider (0-63) so use a slightly larger
-      // multiplier than x264/x265, but much less than the old 10x
+      // multiplier than x264/x265
       float multiplier = 2.5f;
       if (job->profile.codec == "libsvtav1")
          multiplier = 3.0f;
@@ -664,16 +664,7 @@ void JobManager::ProcessCheckScore(std::shared_ptr<BenchmarkJob>& job)
    if (nextCrf > job->crfMax)
       nextCrf = job->crfMax;
 
-   bool alreadyTested = false;
-   for (int c : job->testedCrfs)
-   {
-      if (c == nextCrf)
-      {
-         alreadyTested = true;
-         break;
-      }
-   }
-
+   bool alreadyTested = std::find(job->testedCrfs.begin(), job->testedCrfs.end(), nextCrf) != job->testedCrfs.end();
    bool targetHit = (diff >= 0.0f && diff <= 0.2f);
 
    if (targetHit || job->crfMin > job->crfMax || alreadyTested ||

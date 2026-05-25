@@ -1,3 +1,4 @@
+#include "job_manager.h"
 #include "ui_manager.h"
 #include "window_manager.h"
 
@@ -39,13 +40,15 @@ int main(int argc, char** argv)
       return 1;
    }
 
-   UIManager uiManager;
+   JobManager jobManager;
+   UIManager uiManager(jobManager);
 
    // Main render loop
    while (!window.ShouldClose())
    {
       window.BeginFrame();
 
+      jobManager.Update();
       uiManager.Draw();
 
       window.EndFrame();

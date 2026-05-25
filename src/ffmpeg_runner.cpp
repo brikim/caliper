@@ -1,23 +1,20 @@
 #include "ffmpeg_runner.h"
 
 #include <array>
+#include <charconv>
 #include <cstdio>
 #include <iostream>
-#include <regex>
+#include <string_view>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
+
 #include <nlohmann/json.hpp>
 #include <sstream>
 
 using json = nlohmann::json;
-
-#ifdef _WIN32
-#define popen _popen
-#define pclose _pclose
-#endif
 
 FFmpegRunner::FFmpegRunner()
 {}
@@ -38,7 +35,6 @@ bool FFmpegRunner::Start(const std::string& command)
    }
 
    m_running = true;
-   m_stopRequested = false;
    m_vmafScore = -1.0f;
 
    // Clear queues
@@ -58,7 +54,9 @@ bool FFmpegRunner::Start(const std::string& command)
       full_cmd += " 2>&1";
    }
 
-   m_worker = std::thread(&FFmpegRunner::RunThread, this, full_cmd);
+   m_worker = std::jthread([this](std::stop_token st, std::string cmd) {
+      RunThread(st, std::move(cmd));
+   }, full_cmd);
    return true;
 }
 
@@ -66,13 +64,14 @@ void FFmpegRunner::Stop()
 {
    if (m_running)
    {
-      m_stopRequested = true;
+      m_worker.request_stop();
+
 #ifdef _WIN32
-      // Forcefully kill ffmpeg instances on Windows to unblock ReadFile.
-      // We use ExecuteCommand to avoid the visible console window that system() creates.
-      ExecuteCommand("taskkill /IM ffmpeg.exe /F /T", [](const char*, size_t) -> bool {
-         return true; // Ignore the output, just let the command finish
-      });
+      void* handle = m_processHandle.load();
+      if (handle)
+      {
+         TerminateProcess(static_cast<HANDLE>(handle), 0);
+      }
 #endif
    }
    if (m_worker.joinable())
@@ -127,11 +126,12 @@ bool FFmpegRunner::ExecuteCommand(const std::string& command, std::function<bool
    si.hStdOutput = hWritePipe;
    si.hStdError = hWritePipe;
 
-   PROCESS_INFORMATION pi = {0};
-
    std::string shellCmd = "cmd.exe /c \"" + command + "\"";
    std::vector<char> cmdBuffer(shellCmd.begin(), shellCmd.end());
    cmdBuffer.push_back('\0');
+
+   // Inside ExecuteCommand (#ifdef _WIN32)
+   PROCESS_INFORMATION pi = {0};
 
    if (!CreateProcessA(NULL, cmdBuffer.data(), NULL, NULL, TRUE,
                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
@@ -143,12 +143,14 @@ bool FFmpegRunner::ExecuteCommand(const std::string& command, std::function<bool
 
    CloseHandle(hWritePipe);
 
+   // Store the handle securely for Stop() to use
+   m_processHandle.store(pi.hProcess);
+
    std::array<char, 4096> buffer;
    DWORD bytesRead;
 
    while (ReadFile(hReadPipe, buffer.data(), buffer.size(), &bytesRead, NULL) && bytesRead > 0)
    {
-      // If the callback returns false, we kill the process early
       if (!onChunk(buffer.data(), static_cast<size_t>(bytesRead)))
       {
          TerminateProcess(pi.hProcess, 0);
@@ -160,6 +162,9 @@ bool FFmpegRunner::ExecuteCommand(const std::string& command, std::function<bool
    CloseHandle(pi.hProcess);
    CloseHandle(pi.hThread);
    CloseHandle(hReadPipe);
+
+   // Clear the handle when finished
+   m_processHandle.store(nullptr);
    return true;
 
 #else
@@ -187,13 +192,13 @@ bool FFmpegRunner::ExecuteCommand(const std::string& command, std::function<bool
 #endif
 }
 
-void FFmpegRunner::RunThread(std::string command)
+void FFmpegRunner::RunThread(std::stop_token stoken, std::string command)
 {
    std::string accumulated;
 
-   ExecuteCommand(command, [this, &accumulated](const char* data, size_t size) -> bool {
-      // Return false to tell ExecuteCommand to terminate the process
-      if (m_stopRequested)
+   ExecuteCommand(command, [this, &accumulated, &stoken](const char* data, size_t size) -> bool {
+      // Check the jthread's built-in stop token
+      if (stoken.stop_requested())
          return false;
 
       accumulated.append(data, size);
@@ -236,46 +241,80 @@ void FFmpegRunner::RunThread(std::string command)
 
 void FFmpegRunner::ParseLogLine(const std::string& line)
 {
-   // 1. Parse progress: "frame=  123 fps= 30 q=... size=... time=00:00:04.10
-   // bitrate=123.4kbits/s speed=1.2x"
-   if (line.find("frame=") != std::string::npos &&
-       line.find("time=") != std::string::npos)
+   std::string_view sv(line);
+
+   // 1. Parse progress
+   if (sv.find("frame=") != std::string_view::npos &&
+       sv.find("time=") != std::string_view::npos)
    {
       std::lock_guard<std::mutex> lock(m_progressMutex);
 
-      // Very basic parsing using regex (could be optimized)
-      std::smatch match;
-      if (std::regex_search(line, match, std::regex(R"(frame=\s*(\d+))")))
+      // Helper lambda to find a key, skip spaces, and extract a number directly
+      auto extractNum = [sv](std::string_view key, auto& outValue) {
+         size_t pos = sv.find(key);
+         if (pos != std::string_view::npos)
+         {
+            pos += key.length();
+            // FFmpeg pads with spaces (e.g., "frame=  123")
+            while (pos < sv.length() && sv[pos] == ' ')
+            {
+               pos++;
+            }
+
+            if (pos < sv.length())
+            {
+               std::from_chars(sv.data() + pos, sv.data() + sv.length(), outValue);
+            }
+         }
+      };
+
+      extractNum("frame=", m_progress.frame);
+      extractNum("fps=", m_progress.fps);
+      extractNum("bitrate=", m_progress.bitrate);
+      extractNum("speed=", m_progress.speed);
+
+      // Extract the time string (e.g., "time=00:00:04.10")
+      constexpr std::string_view timeKey = "time=";
+      size_t timePos = sv.find(timeKey);
+      if (timePos != std::string_view::npos)
       {
-         m_progress.frame = std::stoi(match[1].str());
-      }
-      if (std::regex_search(line, match, std::regex(R"(fps=\s*([\d.]+))")))
-      {
-         m_progress.fps = std::stof(match[1].str());
-      }
-      if (std::regex_search(line, match, std::regex(R"(time=([\d:.]+))")))
-      {
-         m_progress.time = match[1].str();
-      }
-      if (std::regex_search(line, match,
-                            std::regex(R"(bitrate=\s*([\d.]+)kbits/s)")))
-      {
-         m_progress.bitrate = std::stof(match[1].str());
-      }
-      if (std::regex_search(line, match, std::regex(R"(speed=\s*([\d.]+)x)")))
-      {
-         m_progress.speed = std::stof(match[1].str());
+         timePos += timeKey.length();
+
+         // Find the end of the time string (next space or end of line)
+         size_t endPos = sv.find(' ', timePos);
+         if (endPos == std::string_view::npos)
+         {
+            endPos = sv.length();
+         }
+
+         m_progress.time = std::string(sv.substr(timePos, endPos - timePos));
       }
    }
 
-   // 2. Parse VMAF: "[libvmaf @ 0000021c...] VMAF score: 95.1234"
-   if (line.find("VMAF score:") != std::string::npos)
+   // 2. Parse VMAF
+   constexpr std::string_view vmafKey = "VMAF score:";
+   size_t vmafPos = sv.find(vmafKey);
+   if (vmafPos != std::string_view::npos)
    {
-      std::smatch match;
-      if (std::regex_search(line, match,
-                            std::regex(R"(VMAF score:\s*([\d.]+))")))
+      vmafPos += vmafKey.length();
+
+      // Skip any spaces between the colon and the number
+      while (vmafPos < sv.length() && sv[vmafPos] == ' ')
       {
-         m_vmafScore = std::stof(match[1].str());
+         vmafPos++;
+      }
+
+      if (vmafPos < sv.length())
+      {
+         // Parse into a temporary raw float
+         float tempScore = 0.0f;
+         auto [ptr, ec] = std::from_chars(sv.data() + vmafPos, sv.data() + sv.length(), tempScore);
+
+         // Only assign to the atomic if the parse was successful
+         if (ec == std::errc())
+         {
+            m_vmafScore = tempScore;
+         }
       }
    }
 }

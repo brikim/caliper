@@ -124,10 +124,6 @@ public:
    {
       return m_jobs;
    }
-   void SetMaxConcurrentJobs(int count)
-   {
-      m_maxConcurrentJobs = count;
-   }
 
 private:
    std::string GenerateTempFileName(const std::shared_ptr<BenchmarkJob>& job, std::string_view header, bool includeSegment);
