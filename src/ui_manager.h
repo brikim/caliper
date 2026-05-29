@@ -6,6 +6,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -42,4 +43,6 @@ private:
    int m_activeProfileIdx = 0; // The currently selected/active profile
    int m_selectedJobId = -1;
    bool m_profilesDirty = false;
+
+   std::optional<std::string> m_ffmpegVersion;
 };

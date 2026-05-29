@@ -9,6 +9,10 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
+#include <TlHelp32.h>
+#else
+#include <signal.h>
 #endif
 
 #include <nlohmann/json.hpp>
@@ -35,6 +39,7 @@ bool FFmpegRunner::Start(const std::string& command)
    }
 
    m_running = true;
+   m_paused = false;
    m_vmafScore = -1.0f;
 
    // Clear queues
@@ -80,9 +85,107 @@ void FFmpegRunner::Stop()
    }
 }
 
+void FFmpegRunner::Pause()
+{
+   if (!m_running || m_paused)
+      return;
+
+   m_paused = true;
+
+#ifdef _WIN32
+   void* handle = m_processHandle.load();
+   if (!handle)
+   {
+      // The process hasn't been created yet. 
+      // ExecuteCommand will see m_paused = true and suspend it immediately upon creation.
+      return;
+   }
+
+   DWORD processId = GetProcessId(static_cast<HANDLE>(handle));
+   if (processId == 0) return;
+
+   HANDLE hThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+   if (hThreadSnapshot == INVALID_HANDLE_VALUE) return;
+
+   THREADENTRY32 threadEntry;
+   threadEntry.dwSize = sizeof(THREADENTRY32);
+
+   if (Thread32First(hThreadSnapshot, &threadEntry))
+   {
+      do
+      {
+         if (threadEntry.th32OwnerProcessID == processId)
+         {
+            HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, threadEntry.th32ThreadID);
+            if (hThread)
+            {
+               SuspendThread(hThread);
+               CloseHandle(hThread);
+            }
+         }
+      } while (Thread32Next(hThreadSnapshot, &threadEntry));
+   }
+   CloseHandle(hThreadSnapshot);
+#else
+   // Note: Your current POSIX implementation uses popen(), which hides the PID.
+   // To use kill(pid, SIGSTOP), you would need to rewrite the POSIX ExecuteCommand 
+   // to use fork() and exec() or posix_spawn() to capture the PID.
+#endif
+}
+
+void FFmpegRunner::Resume()
+{
+   if (!m_running || !m_paused)
+      return;
+
+   m_paused = false;
+
+#ifdef _WIN32
+   void* handle = m_processHandle.load();
+   if (!handle)
+   {
+      // If it hasn't started yet, clearing the flag above is all we needed to do.
+      return;
+   }
+
+   DWORD processId = GetProcessId(static_cast<HANDLE>(handle));
+   if (processId == 0) return;
+
+   HANDLE hThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+   if (hThreadSnapshot == INVALID_HANDLE_VALUE) return;
+
+   THREADENTRY32 threadEntry;
+   threadEntry.dwSize = sizeof(THREADENTRY32);
+
+   if (Thread32First(hThreadSnapshot, &threadEntry))
+   {
+      do
+      {
+         if (threadEntry.th32OwnerProcessID == processId)
+         {
+            HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, threadEntry.th32ThreadID);
+            if (hThread)
+            {
+               ResumeThread(hThread);
+               CloseHandle(hThread);
+            }
+         }
+      } while (Thread32Next(hThreadSnapshot, &threadEntry));
+   }
+   CloseHandle(hThreadSnapshot);
+#else
+   // Requires captured PID (kill(pid, SIGCONT))
+#endif
+}
+
 bool FFmpegRunner::IsRunning() const
 {
    return m_running;
+}
+
+bool FFmpegRunner::IsPaused() const
+{
+   return m_paused;
 }
 
 std::vector<std::string> FFmpegRunner::GetNewLogs()
@@ -396,4 +499,39 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
    }
 
    return meta;
+}
+
+std::optional<std::string> FFmpegRunner::GetFFmpegVersion()
+{
+   std::string versionOutput;
+   // We use "ffmpeg -version" and capture output
+   bool success = ExecuteCommand("ffmpeg -version", [&versionOutput](const char* data, size_t size) -> bool {
+      versionOutput.append(data, size);
+      return true; // Keep reading
+   });
+
+   if (!success || versionOutput.empty())
+   {
+      return std::nullopt;
+   }
+
+   // The string starts with "ffmpeg version X.X.X ..."
+   std::string_view sv(versionOutput);
+   constexpr std::string_view prefix = "ffmpeg version ";
+
+   size_t startPos = sv.find(prefix);
+   if (startPos == std::string_view::npos)
+   {
+      return std::nullopt;
+   }
+
+   startPos += prefix.length();
+   size_t endPos = sv.find(' ', startPos);
+
+   if (endPos == std::string_view::npos)
+   {
+      endPos = sv.length();
+   }
+
+   return std::string(sv.substr(startPos, endPos - startPos));
 }

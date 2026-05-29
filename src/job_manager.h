@@ -118,6 +118,8 @@ public:
    void ClearCompletedJobs();
    void RemoveJob(int jobId);
    void CancelJob(int jobId);
+   void PauseJob(int jobId);
+   void ResumeJob(int jobId);
 
    // Accessors for the UI
    const std::vector<std::shared_ptr<BenchmarkJob>>& GetJobs() const

@@ -266,6 +266,30 @@ void JobManager::CancelJob(int jobId)
    }
 }
 
+void JobManager::PauseJob(int jobId)
+{
+   for (auto& job : m_jobs)
+   {
+      if (job->jobId == jobId && job->runner && !job->isComplete)
+      {
+         job->runner->Pause();
+         break;
+      }
+   }
+}
+
+void JobManager::ResumeJob(int jobId)
+{
+   for (auto& job : m_jobs)
+   {
+      if (job->jobId == jobId && job->runner && !job->isComplete)
+      {
+         job->runner->Resume();
+         break;
+      }
+   }
+}
+
 std::string JobManager::GenerateTempFileName(const std::shared_ptr<BenchmarkJob>& job,
                                              std::string_view header, bool includeSegment)
 {

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
@@ -41,8 +42,17 @@ public:
    // Attempt to stop the process
    void Stop();
 
+   // Attempt to pause the process
+   void Pause();
+
+   // Attempt to resume the process
+   void Resume();
+
    // Check if the worker thread is running
    bool IsRunning() const;
+
+   // Check if the worker thread is paused
+   bool IsPaused() const;
 
    // Retrieve unread log lines
    std::vector<std::string> GetNewLogs();
@@ -56,6 +66,9 @@ public:
    // Fetch video metadata synchronously using ffprobe
    VideoMetadata GetMetadata(const std::string& filepath);
 
+   // Returns the version string, or throws/returns empty if not found
+   std::optional<std::string> GetFFmpegVersion();
+
 private:
    bool ExecuteCommand(const std::string& command, std::function<bool(const char* data, size_t size)> onChunk);
    void RunThread(std::stop_token stoken, std::string command);
@@ -63,6 +76,7 @@ private:
 
    std::jthread m_worker;
    std::atomic<bool> m_running{false};
+   std::atomic<bool> m_paused{false};
 
    mutable std::mutex m_logMutex;
    std::queue<std::string> m_logQueue;

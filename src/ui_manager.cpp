@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <ranges>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,36 @@ namespace
       return "";
 #endif
    }
+
+   auto TimeToSeconds(std::string_view t)
+   {
+      if (t.empty())
+         return 0.0f;
+
+      // Helper to find the next colon
+      auto getNextPart = [&t](std::string_view& sv) -> std::string_view {
+         size_t pos = sv.find(':');
+         std::string_view part = sv.substr(0, pos);
+         sv.remove_prefix(pos == std::string_view::npos ? sv.size() : pos + 1);
+         return part;
+      };
+
+      // Parse Hours
+      std::string_view partH = getNextPart(t);
+      int h = 0;
+      std::from_chars(partH.data(), partH.data() + partH.size(), h);
+
+      // Parse Minutes
+      std::string_view partM = getNextPart(t);
+      int m = 0;
+      std::from_chars(partM.data(), partM.data() + partM.size(), m);
+
+      // Parse Seconds (float)
+      float s = 0.0f;
+      std::from_chars(t.data(), t.data() + t.size(), s);
+
+      return (static_cast<float>(h) * 3600.0f) + (static_cast<float>(m) * 60.0f) + s;
+   };
 };
 
 static void DrawSizeColumn(float sizeMB, bool running = false)
@@ -133,6 +164,9 @@ UIManager::UIManager(std::reference_wrapper<JobManager> jobManager)
    {
       m_activeProfileIdx = std::distance(m_profiles.begin(), it);
    }
+
+   FFmpegRunner tempRunner;
+   m_ffmpegVersion = tempRunner.GetFFmpegVersion();
 }
 
 UIManager::~UIManager()
@@ -358,6 +392,18 @@ void UIManager::Draw()
    ImGui::Begin("CaliperMain", nullptr, SetupImGuiStyle());
    ImGui::PopStyleVar(3);
 
+   // Disable the entire UI if FFmpeg wasn't found
+   bool ffmpegMissing = !m_ffmpegVersion.has_value();
+   if (ffmpegMissing)
+   {
+      // Optionally draw a warning message that is NOT disabled
+      ImGui::Spacing();
+      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
+                         "ERROR: FFmpeg not detected! Please ensure ffmpeg is in your PATH.");
+
+      ImGui::BeginDisabled();
+   }
+
    auto sectionSepFunc = []() {
       ImGui::Spacing();
       ImGui::Separator();
@@ -374,6 +420,11 @@ void UIManager::Draw()
        !ImGui::IsAnyItemHovered())
    {
       m_selectedJobId = -1;
+   }
+
+   if (ffmpegMissing)
+   {
+      ImGui::EndDisabled();
    }
 
    ImGui::End();
@@ -398,6 +449,25 @@ void UIManager::DrawInputSection()
 {
    ImGui::TextColored(UI_HEADER_COLOR, "1. Source Video");
 
+   std::string versionText = m_ffmpegVersion.has_value() ?
+      std::format("FFmpeg v{}", m_ffmpegVersion.value()) : "FFmpeg not found!";
+   ImVec2 textSize = ImGui::CalcTextSize(versionText.c_str());
+
+   float posX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - textSize.x;
+   ImGui::SameLine();
+   ImGui::SetCursorPosX(posX);
+
+   // 4. Draw the text
+   if (m_ffmpegVersion.has_value())
+   {
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextDisabled("%s", versionText.c_str());
+   }
+   else
+   {
+      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s", versionText.c_str());
+   }
+
    if (ImGui::Button("Browse...", UI_BUTTON_SIZE))
    {
       std::string selected = OpenFileDialog();
@@ -410,6 +480,7 @@ void UIManager::DrawInputSection()
       }
    }
    ImGui::SameLine();
+   ImGui::SetNextItemWidth(-FLT_MIN);
    ImGui::InputText("##ReferenceVideo", &m_referenceVideo, ImGuiInputTextFlags_ReadOnly);
 
    if (m_referenceMeta.valid)
@@ -771,6 +842,7 @@ void UIManager::DrawJobQueue()
 
    bool selectedIsValid = false;
    bool selectedIsProcessing = false;
+   bool selectedIsPaused = false;
    if (m_selectedJobId != -1)
    {
       for (const auto& job : jobs)
@@ -781,6 +853,12 @@ void UIManager::DrawJobQueue()
             if (!job->isComplete && job->state != JobState::INIT)
             {
                selectedIsProcessing = true;
+
+               // Check the runner's pause state
+               if (job->runner && job->runner->IsPaused())
+               {
+                  selectedIsPaused = true;
+               }
                break;
             }
          }
@@ -789,7 +867,7 @@ void UIManager::DrawJobQueue()
 
    auto dummyButtonSize = ImVec2(10.0f, 0.0f);
    float rightAlignWidth =
-      (UI_BUTTON_SIZE.x * 3.0f) + (ImGui::GetStyle().ItemSpacing.x * 2.0f) + dummyButtonSize.x * 2.0f;
+      (UI_BUTTON_SIZE.x * 4.0f) + (ImGui::GetStyle().ItemSpacing.x * 4.0f) + dummyButtonSize.x * 2.0f;
    float alignX = ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() -
       rightAlignWidth;
    if (alignX > ImGui::GetCursorPosX())
@@ -800,6 +878,26 @@ void UIManager::DrawJobQueue()
    {
       ImGui::SameLine();
    }
+
+   if (!selectedIsValid || !selectedIsProcessing)
+      ImGui::BeginDisabled();
+
+   const char* pauseLabel = selectedIsPaused ? "Resume Job" : "Pause Job";
+   if (ImGui::Button(pauseLabel, UI_BUTTON_SIZE))
+   {
+      // Route this to your JobManager to update the specific runner
+      if (selectedIsPaused)
+         m_jobManager.get().ResumeJob(m_selectedJobId);
+      else
+         m_jobManager.get().PauseJob(m_selectedJobId);
+   }
+
+   if (!selectedIsValid || !selectedIsProcessing)
+      ImGui::EndDisabled();
+
+   ImGui::SameLine();
+   ImGui::Dummy(dummyButtonSize); // The matching gap you requested
+   ImGui::SameLine();
 
    if (!selectedIsValid || selectedIsProcessing)
       ImGui::BeginDisabled();
@@ -930,14 +1028,10 @@ void UIManager::DrawJobQueue()
                               0.5f);
       ImGui::TableHeadersRow();
 
-      std::vector<int> uniqueIds;
-      uniqueIds.reserve(jobs.size());
+      std::set<int> uniqueIds;
       for (const auto& j : jobs)
       {
-         if (std::ranges::find(uniqueIds, j->jobId) == uniqueIds.end())
-         {
-            uniqueIds.push_back(j->jobId);
-         }
+         uniqueIds.insert(j->jobId);
       }
 
       for (int id : uniqueIds)
@@ -990,7 +1084,9 @@ void UIManager::DrawJobQueue()
          ImGui::TableNextColumn();
          if (rowRunning)
          {
-            if (latestIter->state == JobState::EXTRACTING_SEGMENT)
+            if (latestIter->runner && latestIter->runner->IsPaused())
+               ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "Paused");
+            else if (latestIter->state == JobState::EXTRACTING_SEGMENT)
                ImGui::TextColored(UI_EXTRACT_COLOR,
                                   "Extracting Seg %d/%d",
                                   latestIter->currentSegmentIdx + 1,
@@ -1133,34 +1229,6 @@ void UIManager::DrawJobQueue()
          ImGui::TableNextColumn();
          if (running)
          {
-            auto TimeToSeconds = [](std::string_view t) -> float {
-               if (t.empty())
-                  return 0.0f;
-
-               // Helper to find the next colon
-               auto getNextPart = [&t](std::string_view& sv) -> std::string_view {
-                  size_t pos = sv.find(':');
-                  std::string_view part = sv.substr(0, pos);
-                  sv.remove_prefix(pos == std::string_view::npos ? sv.size() : pos + 1);
-                  return part;
-               };
-
-               // Parse Hours
-               std::string_view partH = getNextPart(t);
-               int h = 0;
-               std::from_chars(partH.data(), partH.data() + partH.size(), h);
-
-               // Parse Minutes
-               std::string_view partM = getNextPart(t);
-               int m = 0;
-               std::from_chars(partM.data(), partM.data() + partM.size(), m);
-
-               // Parse Seconds (float)
-               float s = 0.0f;
-               std::from_chars(t.data(), t.data() + t.size(), s);
-
-               return (static_cast<float>(h) * 3600.0f) + (static_cast<float>(m) * 60.0f) + s;
-            };
             auto progressSec = TimeToSeconds(prog.time);
             auto pct = static_cast<int>((progressSec / job->segmentDuration) * 100.0f);
             if (pct > 100)
