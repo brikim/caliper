@@ -16,7 +16,6 @@ struct EncodeProfile
    std::string codec = "libx264";
    std::string preset = "medium";
    int startCrf = DEFAULT_CRF;
-   bool autoCrf = true;
    int targetVmaf = 96;
    std::string extraArgs = "";
    std::string bitDepth = "8-bit";
@@ -54,6 +53,14 @@ enum class JobState
    DONE
 };
 
+struct SegmentData
+{
+   float startTime = 0.0f;
+   float vmaf = 0.0f;
+   float bitrate = 0.0f; // kbps
+   int64_t sizeBytes = 0;
+};
+
 struct CrfTestResult
 {
    int crf = -1;
@@ -69,7 +76,7 @@ struct BenchmarkJob
    std::unique_ptr<FFmpegRunner> runner;
    bool isComplete = false;
    bool isCanceled = false;
-   float finalVMAF = -1.0f;
+   float avgVmaf = -1.0f;
    float avgSpeed = 0.0f;
    float avgBitrate = 0.0f; // kbps
 
@@ -85,10 +92,7 @@ struct BenchmarkJob
    JobState state = JobState::INIT;
    bool commandStarted = false;
    int currentSegmentIdx = 0;
-   std::vector<float> segmentStartTimes;
-   std::vector<float> segmentVMAFs;
-   std::vector<float> segmentBitrates;
-   std::vector<int64_t> segmentSizes; // in bytes
+   std::vector<SegmentData> segments;
    float estimatedFullSize = 0.0f;    // in MB
    float segmentDuration = 60.0f;
 
@@ -140,7 +144,6 @@ private:
    void ProcessVmaffingSegment(std::shared_ptr<BenchmarkJob>& job);
    void ProcessJob(std::shared_ptr<BenchmarkJob>& job);
 
-   void UpdateJobMetrics(std::shared_ptr<BenchmarkJob>& job);
    void UpdateCrfBounds(std::shared_ptr<BenchmarkJob>& job, float diff);
    int CalculateNextCrf(const std::shared_ptr<BenchmarkJob>& job, float target, float diff);
    void FinalizeSearch(std::shared_ptr<BenchmarkJob>& job);

@@ -23,7 +23,6 @@ JobManager::JobManager()
       std::filesystem::remove_all(m_tempDir, ec);
    }
 
-   // 3. Create a fresh, empty directory for this session
    std::filesystem::create_directories(m_tempDir, ec);
 }
 
@@ -137,7 +136,6 @@ void JobManager::AddJob(const std::filesystem::path& sourceFile,
    job->iteration = 0;
    job->sourceFile = sourceFile;
    job->sourceMeta = sourceMeta;
-   //job->testedCrfs.push_back(job->currentCrf);
    job->segmentDuration = segmentDuration;
 
    // Calculate segment start times
@@ -145,10 +143,10 @@ void JobManager::AddJob(const std::filesystem::path& sourceFile,
 
    if (segmentCount <= 1)
    {
-      float mid = (totalDur / 2.0f) - (segmentDuration / 2.0f);
-      if (mid < 0.0f)
-         mid = 0.0f;
-      job->segmentStartTimes.push_back(mid);
+      float mid = std::max(0.0f, (totalDur / 2.0f) - (segmentDuration / 2.0f));
+      job->segments.push_back(SegmentData{
+         .startTime = mid
+      });
    }
    else
    {
@@ -156,13 +154,12 @@ void JobManager::AddJob(const std::filesystem::path& sourceFile,
       for (int i = 0; i < segmentCount; ++i)
       {
          float s = (chunkDur * i) + (chunkDur / 2.0f) - (segmentDuration / 2.0f);
-         if (s < 0.0f)
-            s = 0.0f;
-         if (s + segmentDuration > totalDur)
-            s = totalDur - segmentDuration;
-         if (s < 0.0f)
-            s = 0.0f;
-         job->segmentStartTimes.push_back(s);
+         s = std::clamp(s, 0.0f, std::max(0.0f, totalDur - segmentDuration));
+
+         // Push the struct with the known start time, zeroing the rest out
+         job->segments.push_back(SegmentData{
+            .startTime = s
+         });
       }
    }
 
@@ -325,12 +322,17 @@ std::filesystem::path JobManager::GenerateTempFileName(const std::shared_ptr<Ben
 void JobManager::ProcessInit(std::shared_ptr<BenchmarkJob>& job)
 {
    job->currentSegmentIdx = 0;
-   job->segmentVMAFs.clear();
-   job->segmentBitrates.clear();
-   job->segmentSizes.clear();
    job->estimatedFullSize = 0.0f;
    job->commandStarted = false;
    job->outputFile = GenerateTempFileName(job, "temp_dist", false);
+
+   // Zero out the dynamic data, leaving the startTimes intact
+   for (auto& seg : job->segments)
+   {
+      seg.vmaf = 0.0f;
+      seg.bitrate = 0.0f;
+      seg.sizeBytes = 0;
+   }
 
    if (job->segmentsReady)
    {
@@ -347,7 +349,7 @@ void JobManager::ProcessExtractingSegment(std::shared_ptr<BenchmarkJob>& job)
 {
    if (!job->commandStarted)
    {
-      float start = job->segmentStartTimes[job->currentSegmentIdx];
+      float start = job->segments[job->currentSegmentIdx].startTime;
       float preSeek = (start > 5.0f) ? start - 5.0f : 0.0f;
       float postSeek = start - preSeek;
       auto refFile = GenerateTempFileName(job, "temp_ref", true);
@@ -376,7 +378,7 @@ void JobManager::ProcessExtractingSegment(std::shared_ptr<BenchmarkJob>& job)
           std::filesystem::file_size(refFile, ec) > 0)
       {
          job->currentSegmentIdx++;
-         if (job->currentSegmentIdx >= job->segmentStartTimes.size())
+         if (job->currentSegmentIdx >= job->segments.size())
          {
             // All segments extracted, reset index and begin encoding
             job->segmentsReady = true;
@@ -510,14 +512,22 @@ void JobManager::ProcessEncodingSegment(std::shared_ptr<BenchmarkJob>& job)
       job->commandStarted = false;
       if (job->runner->GetProgress().bitrate > 0)
       {
-         job->segmentBitrates.push_back(job->runner->GetProgress().bitrate);
-         std::error_code ec;
-         job->segmentSizes.push_back(std::filesystem::file_size(job->outputFile, ec));
+         // Grab a reference to the current segment struct to keep code clean
+         auto& currentSeg = job->segments[job->currentSegmentIdx];
 
-         // Update running averages immediately for UI visibility
-         float sumBitrate = std::accumulate(job->segmentBitrates.begin(),
-                                            job->segmentBitrates.end(), 0.0f);
-         job->avgBitrate = sumBitrate / job->segmentBitrates.size();
+         currentSeg.bitrate = job->runner->GetProgress().bitrate;
+
+         std::error_code ec;
+         currentSeg.sizeBytes = std::filesystem::file_size(job->outputFile, ec);
+
+         // Update running averages for UI visibility
+         float sumBitrate = 0.0f;
+         int count = job->currentSegmentIdx + 1; // Segments completed so far
+         for (int i = 0; i < count; ++i)
+         {
+            sumBitrate += job->segments[i].bitrate;
+         }
+         job->avgBitrate = sumBitrate / count;
 
          if (job->avgBitrate > 0.0f && job->sourceMeta.duration > 0)
          {
@@ -561,9 +571,20 @@ void JobManager::ProcessVmaffingSegment(std::shared_ptr<BenchmarkJob>& job)
       if (float score = job->runner->GetVMAFScore();
           score > 0.0f)
       {
-         job->segmentVMAFs.push_back(score);
+         // Assign directly instead of push_back
+         job->segments[job->currentSegmentIdx].vmaf = score;
+
+         // Calculate the average VMAF so far
+         float sumVmaf = 0.0f;
+         int segCompleted = job->currentSegmentIdx + 1;
+         for (auto i = 0u; i < segCompleted; ++i)
+         {
+            sumVmaf += job->segments[i].vmaf;
+         }
+         job->avgVmaf = sumVmaf / segCompleted;
+
          job->currentSegmentIdx++;
-         if (job->currentSegmentIdx >= job->segmentStartTimes.size())
+         if (job->currentSegmentIdx >= job->segments.size())
          {
             job->state = JobState::CHECKING_SCORE;
          }
@@ -577,22 +598,6 @@ void JobManager::ProcessVmaffingSegment(std::shared_ptr<BenchmarkJob>& job)
          job->isComplete = true;
          job->state = JobState::DONE;
       }
-   }
-}
-
-void JobManager::UpdateJobMetrics(std::shared_ptr<BenchmarkJob>& job)
-{
-   // std::reduce (C++17) can be faster than accumulate as it allows out-of-order execution
-   float sumVmaf = std::reduce(job->segmentVMAFs.begin(), job->segmentVMAFs.end(), 0.0f);
-   job->finalVMAF = sumVmaf / job->segmentVMAFs.size();
-
-   float sumBitrate = std::reduce(job->segmentBitrates.begin(), job->segmentBitrates.end(), 0.0f);
-   job->avgBitrate = sumBitrate / job->segmentBitrates.size();
-
-   if (job->avgBitrate > 0.0f && job->sourceMeta.duration > 0)
-   {
-      job->estimatedFullSize = (job->avgBitrate * 1000.0f / 8.0f) *
-         job->sourceMeta.duration / (1024.0f * 1024.0f);
    }
 }
 
@@ -664,7 +669,7 @@ void JobManager::FinalizeSearch(std::shared_ptr<BenchmarkJob>& job)
    job->state = JobState::DONE;
 
    auto calcDiff = [](const auto& j) {
-      return j->finalVMAF - j->profile.targetVmaf;
+      return j->avgVmaf - j->profile.targetVmaf;
    };
 
    auto completed_jobs = m_jobs | std::views::filter([&](const auto& other) {
@@ -719,14 +724,14 @@ void JobManager::SpawnNextIteration(std::shared_ptr<BenchmarkJob>& job, int next
    nextJob->crfMin = job->crfMin;
    nextJob->crfMax = job->crfMax;
    nextJob->iteration = job->iteration + 1;
-
    nextJob->testHistory = job->testHistory;
-   //nextJob->testedCrfs = job->testedCrfs;
-   //nextJob->testedCrfs.push_back(nextCrf);
-   //nextJob->testedVmafs = job->testedVmafs;
-
    nextJob->segmentDuration = job->segmentDuration;
-   nextJob->segmentStartTimes = job->segmentStartTimes;
+   for (const auto& oldSeg : job->segments)
+   {
+      nextJob->segments.push_back(SegmentData{
+         .startTime = oldSeg.startTime
+      });
+   }
    nextJob->state = JobState::INIT;
    nextJob->runner = std::make_unique<FFmpegRunner>();
    nextJob->sourceFile = job->sourceFile;
@@ -757,18 +762,15 @@ void JobManager::HandleEarlyExit(std::shared_ptr<BenchmarkJob>& job)
 
 void JobManager::ProcessCheckScore(std::shared_ptr<BenchmarkJob>& job)
 {
-   if (job->segmentVMAFs.empty() || !job->searchActive)
+   if (job->segments.empty() || !job->searchActive)
    {
       HandleEarlyExit(job);
       return;
    }
 
-   UpdateJobMetrics(job);
-
    float target = static_cast<float>(job->profile.targetVmaf);
-   float diff = job->finalVMAF - target;
-   job->testHistory.push_back({job->currentCrf, job->finalVMAF});
-   //job->testedVmafs.push_back(job->finalVMAF);
+   float diff = job->avgVmaf - target;
+   job->testHistory.push_back({job->currentCrf, job->avgVmaf});
 
    UpdateCrfBounds(job, diff);
 

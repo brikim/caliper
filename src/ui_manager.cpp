@@ -111,7 +111,7 @@ static void DrawSizeColumn(float sizeMB, bool running = false)
    }
    else
    {
-      ImGui::Text("-");
+      ImGui::TextDisabled("No Result");
    }
 }
 
@@ -129,7 +129,6 @@ UIManager::UIManager(std::reference_wrapper<JobManager> jobManager)
          .codec = "libx264",
          .preset = "medium",
          .startCrf = DEFAULT_CRF,
-         .autoCrf = true,
          .targetVmaf = 96,
          .extraArgs = "",
          .bitDepth = "8-bit",
@@ -140,7 +139,6 @@ UIManager::UIManager(std::reference_wrapper<JobManager> jobManager)
          .codec = "libx264",
          .preset = "slow",
          .startCrf = DEFAULT_CRF,
-         .autoCrf = true,
          .targetVmaf = 96,
          .extraArgs = "",
          .bitDepth = "8-bit",
@@ -151,7 +149,6 @@ UIManager::UIManager(std::reference_wrapper<JobManager> jobManager)
          .codec = "libx265",
          .preset = "medium",
          .startCrf = DEFAULT_CRF,
-         .autoCrf = true,
          .targetVmaf = 96,
          .extraArgs = "",
          .bitDepth = "10-bit",
@@ -290,7 +287,6 @@ void UIManager::LoadProfiles()
                .codec = item.value("codec", "libx264"),
                .preset = item.value("preset", "medium"),
                .startCrf = item.value("startCrf", DEFAULT_CRF),
-               .autoCrf = item.value("autoCrf", true),
                .targetVmaf = item.value("targetVmaf", 96),
                .extraArgs = item.value("extraArgs", ""),
                .bitDepth = item.value("bitDepth", "8-bit"),
@@ -312,7 +308,6 @@ void UIManager::LoadProfiles()
                   .codec = item.value("codec", "libx264"),
                   .preset = item.value("preset", "medium"),
                   .startCrf = item.value("startCrf", DEFAULT_CRF),
-                  .autoCrf = item.value("autoCrf", true),
                   .targetVmaf = item.value("targetVmaf", 96),
                   .extraArgs = item.value("extraArgs", ""),
                   .bitDepth = item.value("bitDepth", "8-bit"),
@@ -340,7 +335,6 @@ void UIManager::SaveProfiles()
                            {"codec", p.codec},
                            {"preset", p.preset},
                            {"startCrf", p.startCrf},
-                           {"autoCrf", p.autoCrf},
                            {"targetVmaf", p.targetVmaf},
                            {"extraArgs", p.extraArgs},
                            {"bitDepth", p.bitDepth},
@@ -529,7 +523,6 @@ void UIManager::DrawProfileManager()
          .codec = "libx264",
          .preset = "medium",
          .startCrf = DEFAULT_CRF,
-         .autoCrf = true,
          .targetVmaf = 96,
          .extraArgs = "",
          .bitDepth = "8-bit",
@@ -1101,7 +1094,7 @@ void UIManager::DrawJobQueue()
                ImGui::TextColored(UI_EXTRACT_COLOR,
                                   "Extracting Seg %d/%d",
                                   latestIter->currentSegmentIdx + 1,
-                                  (int)latestIter->segmentStartTimes.size());
+                                  (int)latestIter->segments.size());
             else
                ImGui::TextColored(UI_IN_PROG_COLOR,
                                   "Running (Iter %d)", latestIter->iteration + 1);
@@ -1210,15 +1203,15 @@ void UIManager::DrawJobQueue()
             else if (job->state == JobState::EXTRACTING_SEGMENT)
                ImGui::TextColored(UI_EXTRACT_COLOR,
                                   "Extracting Seg %d/%d", job->currentSegmentIdx + 1,
-                                  (int)job->segmentStartTimes.size());
+                                  (int)job->segments.size());
             else if (job->state == JobState::ENCODING_SEGMENT)
                ImGui::TextColored(UI_IN_PROG_COLOR,
                                   "Encoding Seg %d/%d", job->currentSegmentIdx + 1,
-                                  job->segmentStartTimes.size());
+                                  job->segments.size());
             else if (job->state == JobState::VMAFFING_SEGMENT)
                ImGui::TextColored(UI_IN_PROG_COLOR,
                                   "Analyzing Seg %d/%d", job->currentSegmentIdx + 1,
-                                  job->segmentStartTimes.size());
+                                  job->segments.size());
             else if (job->state == JobState::CHECKING_SCORE)
                ImGui::TextColored(UI_EXTRACT_COLOR, "Checking Avg...");
             else
@@ -1228,7 +1221,7 @@ void UIManager::DrawJobQueue()
          {
             if (job->isCanceled)
                ImGui::TextColored(UI_CANCEL_COLOR, "Canceled - Seg %d/%d Completed",
-                                  job->currentSegmentIdx + 1, (int)job->segmentStartTimes.size());
+                                  job->currentSegmentIdx + 1, (int)job->segments.size());
             else
                ImGui::TextColored(UI_SUCESS_COLOR,
                                   job->isRecommended ? "Recommended" : "Done");
@@ -1241,9 +1234,13 @@ void UIManager::DrawJobQueue()
          if (running)
          {
             auto progressSec = TimeToSeconds(prog.time);
-            auto pct = static_cast<int>((progressSec / job->segmentDuration) * 100.0f);
-            if (pct > 100)
-               pct = 100;
+            auto pct = 0;
+            if (job->state == JobState::EXTRACTING_SEGMENT)
+               pct = static_cast<int>((static_cast<float>(job->currentSegmentIdx + 1) / static_cast<float>(job->segments.size())) * 100.0f);
+            else
+               pct = static_cast<int>((progressSec / job->segmentDuration) * 100.0f);
+
+            pct = std::min(pct, 100);
 
             if (job->state == JobState::EXTRACTING_SEGMENT)
                ImGui::Text("Prep: %d%%", pct);
@@ -1260,34 +1257,22 @@ void UIManager::DrawJobQueue()
          }
 
          ImGui::TableNextColumn();
-         bool showTarget =
-            (job->searchActive || job->iteration > 0 || job->profile.autoCrf);
 
-         if (job->finalVMAF > 0.0f)
+         if (job->state == JobState::DONE)
          {
-            if (showTarget)
-               ImGui::Text("%.2f (Target: %d)", job->finalVMAF,
-                           job->profile.targetVmaf);
-            else
-               ImGui::Text("%.2f", job->finalVMAF);
-         }
-         else if (!job->segmentVMAFs.empty())
-         {
-            auto sum = std::accumulate(job->segmentVMAFs.begin(),
-                                       job->segmentVMAFs.end(), 0.0f);
-            auto avg = sum / job->segmentVMAFs.size();
-            if (showTarget)
-               ImGui::TextDisabled("Avg: %.2f (Target: %d)", avg,
-                                   job->profile.targetVmaf);
-            else
-               ImGui::TextDisabled("Avg: %.2f", avg);
+            ImGui::Text("%.2f (Target: %d)", job->avgVmaf, job->profile.targetVmaf);
          }
          else
          {
-            if (showTarget)
-               ImGui::Text("- (Target: %d)", job->profile.targetVmaf);
+            int completedCount = job->currentSegmentIdx;
+            if (job->state != JobState::EXTRACTING_SEGMENT && job->avgVmaf > 0.0f && completedCount > 0)
+            {
+               ImGui::TextDisabled("Avg: %.2f (Target: %d)", job->avgVmaf, job->profile.targetVmaf);
+            }
             else
-               ImGui::Text("-");
+            {
+               ImGui::TextDisabled("No Result (Target: %d)", job->profile.targetVmaf);
+            }
          }
 
          ImGui::TableNextColumn();
@@ -1299,7 +1284,7 @@ void UIManager::DrawJobQueue()
                ImGui::Text("%.1f", job->avgBitrate);
          }
          else
-            ImGui::Text("%.1f", prog.bitrate);
+            ImGui::TextDisabled("No Result", prog.bitrate);
 
          ImGui::TableNextColumn();
          DrawSizeColumn(job->estimatedFullSize, running);
