@@ -4,6 +4,7 @@
 #include "job_manager.h"
 
 #include <atomic>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -30,13 +31,13 @@ private:
    void DrawJobQueue();
 
    ImGuiWindowFlags SetupImGuiStyle();
-   std::string OpenFileDialog();
+   std::filesystem::path OpenFileDialog();
 
    // Core Managers & State
    std::reference_wrapper<JobManager> m_jobManager;
 
-   std::string m_referenceVideo;
-   VideoMetadata m_referenceMeta;
+   std::filesystem::path m_referenceVideo;
+   std::optional<VideoMetadata> m_referenceMeta;
 
    std::vector<EncodeProfile> m_profiles;
 

@@ -422,14 +422,9 @@ void FFmpegRunner::ParseLogLine(const std::string& line)
    }
 }
 
-VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
+std::optional<VideoMetadata> FFmpegRunner::GetMetadata(const std::filesystem::path& filepath)
 {
-   VideoMetadata meta;
-
-   std::string cmd =
-      "ffprobe -v quiet -print_format json -show_format -show_streams \"" +
-      filepath + "\"";
-
+   auto cmd = std::format("ffprobe -v quiet -print_format json -show_format -show_streams \"{}\"", filepath.string());
    std::string result = "";
 
    ExecuteCommand(cmd, [&result](const char* data, size_t size) -> bool {
@@ -438,8 +433,9 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
    });
 
    if (result.empty())
-      return meta;
+      return std::nullopt;
 
+   VideoMetadata meta;
    try
    {
       json j = json::parse(result);
@@ -466,7 +462,7 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
                }
                else
                {
-                  meta.bit_depth = std::stoi(bpp_str);
+                  std::from_chars(bpp_str.data(), bpp_str.data() + bpp_str.size(), meta.bit_depth);
                }
                meta.width = stream.value("width", 0);
                meta.height = stream.value("height", 0);
@@ -475,12 +471,16 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
                size_t slash_pos = r_frame_rate.find('/');
                if (slash_pos != std::string::npos)
                {
-                  float num = std::stof(r_frame_rate.substr(0, slash_pos));
-                  float den = std::stof(r_frame_rate.substr(slash_pos + 1));
+                  float num = 0.0f;
+                  float den = 0.0f;
+
+                  // Parse numerator and denominator using pointer boundaries
+                  std::from_chars(r_frame_rate.data(), r_frame_rate.data() + slash_pos, num);
+                  std::from_chars(r_frame_rate.data() + slash_pos + 1, r_frame_rate.data() + r_frame_rate.size(), den);
+
                   if (den != 0.0f)
                      meta.framerate = num / den;
                }
-               meta.valid = true;
                break;
             }
          }
@@ -489,7 +489,7 @@ VideoMetadata FFmpegRunner::GetMetadata(const std::string& filepath)
       if (j.contains("format"))
       {
          std::string dur_str = j["format"].value("duration", "0.0");
-         meta.duration = std::stof(dur_str);
+         std::from_chars(dur_str.data(), dur_str.data() + dur_str.size(), meta.duration);
       }
    }
    catch (const std::exception& e)

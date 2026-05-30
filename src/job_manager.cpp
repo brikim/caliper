@@ -7,6 +7,7 @@
 #include <numeric>
 #include <ranges>
 #include <thread>
+#include <utility>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -14,7 +15,17 @@
 #include <windows.h>
 #endif
 
-JobManager::JobManager() = default;
+JobManager::JobManager()
+{
+   std::error_code ec;
+   if (std::filesystem::exists(m_tempDir, ec))
+   {
+      std::filesystem::remove_all(m_tempDir, ec);
+   }
+
+   // 3. Create a fresh, empty directory for this session
+   std::filesystem::create_directories(m_tempDir, ec);
+}
 
 JobManager::~JobManager()
 {
@@ -30,6 +41,14 @@ JobManager::~JobManager()
       SetThreadExecutionState(ES_CONTINUOUS);
    }
 #endif
+
+   // If the temp directory exists, remove it and all its contents.
+   // Any temp files from this session should be cleaned up by now, but this is a final safeguard.
+   std::error_code ec;
+   if (std::filesystem::exists(m_tempDir, ec))
+   {
+      std::filesystem::remove_all(m_tempDir, ec);
+   }
 }
 
 void JobManager::Update()
@@ -102,7 +121,7 @@ void JobManager::Update()
 #endif
 }
 
-void JobManager::AddJob(const std::string& sourceFile,
+void JobManager::AddJob(const std::filesystem::path& sourceFile,
                         const VideoMetadata& sourceMeta,
                         const EncodeProfile& profile, int segmentCount,
                         float segmentDuration)
@@ -118,7 +137,7 @@ void JobManager::AddJob(const std::string& sourceFile,
    job->iteration = 0;
    job->sourceFile = sourceFile;
    job->sourceMeta = sourceMeta;
-   job->testedCrfs.push_back(job->currentCrf);
+   //job->testedCrfs.push_back(job->currentCrf);
    job->segmentDuration = segmentDuration;
 
    // Calculate segment start times
@@ -290,16 +309,16 @@ void JobManager::ResumeJob(int jobId)
    }
 }
 
-std::string JobManager::GenerateTempFileName(const std::shared_ptr<BenchmarkJob>& job,
-                                             std::string_view header, bool includeSegment)
+std::filesystem::path JobManager::GenerateTempFileName(const std::shared_ptr<BenchmarkJob>& job,
+                                                       std::string_view header, bool includeSegment)
 {
    if (includeSegment)
    {
-      return std::format("{}_job{}_{}.mkv", header, job->jobId, job->currentSegmentIdx);
+      return m_tempDir / std::format("{}_job{}_{}.mkv", header, job->jobId, job->currentSegmentIdx);
    }
    else
    {
-      return std::format("{}_job{}.mkv", header, job->jobId);
+      return m_tempDir / std::format("{}_job{}.mkv", header, job->jobId);
    }
 }
 
@@ -311,9 +330,7 @@ void JobManager::ProcessInit(std::shared_ptr<BenchmarkJob>& job)
    job->segmentSizes.clear();
    job->estimatedFullSize = 0.0f;
    job->commandStarted = false;
-
-   auto tempDist = GenerateTempFileName(job, "temp_dist", false);
-   job->outputFile = tempDist;
+   job->outputFile = GenerateTempFileName(job, "temp_dist", false);
 
    if (job->segmentsReady)
    {
@@ -335,14 +352,14 @@ void JobManager::ProcessExtractingSegment(std::shared_ptr<BenchmarkJob>& job)
       float postSeek = start - preSeek;
       auto refFile = GenerateTempFileName(job, "temp_ref", true);
 
-      std::string cmd = "ffmpeg -v error -y"
-         " -ss " +
-         std::format("{}", preSeek) + " -i \"" + job->sourceFile +
-         "\""
-         " -ss " +
-         std::format("{}", postSeek) + " -t " +
-         std::format("{}", job->segmentDuration) +
-         " -map 0:v:0 -c:v ffv1 -an " + refFile;
+      auto cmd = std::format(
+         "ffmpeg -v error -y -ss {} -i \"{}\" -ss {} -t {} -map 0:v:0 -c:v ffv1 -an {}",
+         preSeek,
+         job->sourceFile.string(),
+         postSeek,
+         job->segmentDuration,
+         refFile.string()
+      );
 
       // Track the file path in the cache as we extract it
       job->segmentCache->refSegFiles.push_back(refFile);
@@ -353,8 +370,7 @@ void JobManager::ProcessExtractingSegment(std::shared_ptr<BenchmarkJob>& job)
    {
       job->commandStarted = false;
       std::error_code ec;
-      const std::string& refFile =
-         job->segmentCache->refSegFiles[job->currentSegmentIdx];
+      const auto& refFile = job->segmentCache->refSegFiles[job->currentSegmentIdx];
 
       if (std::filesystem::exists(refFile, ec) &&
           std::filesystem::file_size(refFile, ec) > 0)
@@ -395,84 +411,96 @@ void JobManager::ProcessEncodingSegment(std::shared_ptr<BenchmarkJob>& job)
       }
 
       std::string extra = job->profile.extraArgs;
+
       if (job->profile.codec == "libsvtav1")
       {
-         std::string svtParams = "tune=" + std::format("{}", job->profile.svtTune);
-         // Disable SVT-AV1's internal denoiser and film grain synthesis. This setting does not work with VMAF.
-         svtParams += ":film-grain-denoise=0:film-grain=0";
+         // 1. Build base SVT params directly into a single formatted string
+         std::string svtParams = std::format("tune={}:film-grain-denoise=0:film-grain=0", job->profile.svtTune);
 
          if (!extra.empty())
          {
             constexpr std::string_view svtParamKey = "-svtav1-params";
             auto paramLocation = extra.find(svtParamKey);
 
-            // If user put raw colon-delimited params (no leading dash), merge
-            // them
-            if (paramLocation == std::string::npos &&
-                extra[0] != '-')
+            // If user put raw colon-delimited params (no leading dash), merge them
+            if (paramLocation == std::string::npos && extra[0] != '-')
             {
-               svtParams += ":" + extra;
-               extra = "";
+               svtParams = std::format("{}:{}", svtParams, extra);
+               extra.clear();
             }
             // If user manually specified -svtav1-params, merge the values
             else if (paramLocation != std::string::npos && (paramLocation + svtParamKey.length()) <= extra.size())
             {
-               // Extract the value after -svtav1-params and merge
                size_t valueStart = paramLocation + svtParamKey.length();
-               while (valueStart < extra.size() &&
-                      (extra[valueStart] == ' ' || extra[valueStart] == '"'))
+               while (valueStart < extra.size() && (extra[valueStart] == ' ' || extra[valueStart] == '"'))
                   valueStart++;
+
                size_t valueEnd = valueStart;
-               while (valueEnd < extra.size() && extra[valueEnd] != ' ' &&
-                      extra[valueEnd] != '"')
+               while (valueEnd < extra.size() && extra[valueEnd] != ' ' && extra[valueEnd] != '"')
                   valueEnd++;
-               std::string userParams =
-                  extra.substr(valueStart, valueEnd - valueStart);
+
+               std::string userParams = extra.substr(valueStart, valueEnd - valueStart);
                if (!userParams.empty())
-                  svtParams += ":" + userParams;
+               {
+                  svtParams = std::format("{}:{}", svtParams, userParams);
+               }
+
                // Remove the -svtav1-params portion from extra
-               while (valueEnd < extra.size() &&
-                      (extra[valueEnd] == '"' || extra[valueEnd] == ' '))
+               while (valueEnd < extra.size() && (extra[valueEnd] == '"' || extra[valueEnd] == ' '))
                   valueEnd++;
+
                extra = extra.substr(0, paramLocation) + extra.substr(valueEnd);
             }
          }
 
-         extra = "-svtav1-params " + svtParams;
          // Append any remaining extra args
          std::string remaining = job->profile.extraArgs;
-         if (remaining.find("-svtav1-params") != std::string::npos ||
-             (!remaining.empty() && remaining[0] != '-'))
-            remaining = ""; // Already merged above
-         if (!remaining.empty())
-            extra += " " + remaining;
+         if (remaining.find("-svtav1-params") != std::string::npos || (!remaining.empty() && remaining[0] != '-'))
+         {
+            remaining.clear(); // Already merged above
+         }
+
+         // 2. Format the final output cleanly without clunky + operations
+         if (remaining.empty())
+         {
+            extra = std::format("-svtav1-params {}", svtParams);
+         }
+         else
+         {
+            extra = std::format("-svtav1-params {} {}", svtParams, remaining);
+         }
       }
       else if (!extra.empty())
       {
          if (extra[0] != '-' && extra.find('=') != std::string::npos)
          {
+            // 3. Inject variables directly inside quoted placeholders
             if (job->profile.codec == "libx264")
-               extra = "-x264-params \"" + extra + "\"";
+               extra = std::format("-x264-params \"{}\"", extra);
             else if (job->profile.codec == "libx265")
-               extra = "-x265-params \"" + extra + "\"";
+               extra = std::format("-x265-params \"{}\"", extra);
          }
+
          if (extra[0] != ' ')
-            extra = " " + extra;
+         {
+            extra = std::format(" {}", extra);
+         }
       }
 
       // Final safety check for leading space if not empty
       if (!extra.empty() && extra[0] != ' ')
-         extra = " " + extra;
+         extra = std::format(" {}", extra);
 
-      const std::string& refFile =
-         job->segmentCache->refSegFiles[job->currentSegmentIdx];
-
-      std::string cmd = "ffmpeg -v warning -stats -y"
-         " -i " +
-         refFile + " -c:v " + job->profile.codec +
-         " -preset " + job->profile.preset + " -pix_fmt " +
-         pixFmt + " -crf " + std::format("{}", job->currentCrf) +
-         extra + " " + job->outputFile;
+      std::string cmd = std::format(
+         "ffmpeg -v warning -stats -y -i \"{}\" -c:v {} -preset {} -pix_fmt {} -crf {}{} \"{}\"",
+         job->segmentCache->refSegFiles[job->currentSegmentIdx].string(),
+         job->profile.codec,
+         job->profile.preset,
+         pixFmt,
+         job->currentCrf,
+         extra,
+         job->outputFile.string()
+      );
 
       job->runner->Start(cmd);
       job->commandStarted = true;
@@ -516,16 +544,12 @@ void JobManager::ProcessVmaffingSegment(std::shared_ptr<BenchmarkJob>& job)
       if (threads == 0)
          threads = 4;
 
-      const std::string& refFile =
-         job->segmentCache->refSegFiles[job->currentSegmentIdx];
-
-      std::string cmd =
-         "ffmpeg -v info"
-         " -i " +
-         job->outputFile + " -i " + refFile +
-         " -lavfi \"libvmaf=n_threads=" + std::format("{}", threads) +
-         "\""
-         " -f null -";
+      std::string cmd = std::format(
+         "ffmpeg -v info -i \"{}\" -i \"{}\" -lavfi \"libvmaf=n_threads={}\" -f null -",
+         job->outputFile.string(),
+         job->segmentCache->refSegFiles[job->currentSegmentIdx].string(),
+         threads
+      );
 
       job->runner->Start(cmd);
       job->commandStarted = true;
@@ -533,10 +557,9 @@ void JobManager::ProcessVmaffingSegment(std::shared_ptr<BenchmarkJob>& job)
    else if (!job->runner->IsRunning())
    {
       job->commandStarted = false;
-      float score = job->runner->GetVMAFScore();
-      // Reference segments are NOT deleted here — owned by SegmentCache
 
-      if (score > 0.0f)
+      if (float score = job->runner->GetVMAFScore();
+          score > 0.0f)
       {
          job->segmentVMAFs.push_back(score);
          job->currentSegmentIdx++;
@@ -557,29 +580,13 @@ void JobManager::ProcessVmaffingSegment(std::shared_ptr<BenchmarkJob>& job)
    }
 }
 
-void JobManager::ProcessCheckScore(std::shared_ptr<BenchmarkJob>& job)
+void JobManager::UpdateJobMetrics(std::shared_ptr<BenchmarkJob>& job)
 {
-   if (job->segmentVMAFs.empty() || !job->searchActive)
-   {
-      job->isComplete = true;
-      job->state = JobState::DONE;
-
-      if (!job->searchActive)
-      {
-         job->isRecommended = true;
-      }
-
-      std::error_code ec;
-      std::filesystem::remove(job->outputFile, ec);
-      return;
-   }
-
-   float sumVmaf = std::accumulate(job->segmentVMAFs.begin(),
-                                   job->segmentVMAFs.end(), 0.0f);
+   // std::reduce (C++17) can be faster than accumulate as it allows out-of-order execution
+   float sumVmaf = std::reduce(job->segmentVMAFs.begin(), job->segmentVMAFs.end(), 0.0f);
    job->finalVMAF = sumVmaf / job->segmentVMAFs.size();
 
-   float sumBitrate = std::accumulate(job->segmentBitrates.begin(),
-                                      job->segmentBitrates.end(), 0.0f);
+   float sumBitrate = std::reduce(job->segmentBitrates.begin(), job->segmentBitrates.end(), 0.0f);
    job->avgBitrate = sumBitrate / job->segmentBitrates.size();
 
    if (job->avgBitrate > 0.0f && job->sourceMeta.duration > 0)
@@ -587,199 +594,198 @@ void JobManager::ProcessCheckScore(std::shared_ptr<BenchmarkJob>& job)
       job->estimatedFullSize = (job->avgBitrate * 1000.0f / 8.0f) *
          job->sourceMeta.duration / (1024.0f * 1024.0f);
    }
+}
 
-   float target = static_cast<float>(job->profile.targetVmaf);
-   float diff = job->finalVMAF - target;
-
-   // Record this result in the search history
-   job->testedVmafs.push_back(job->finalVMAF);
-
+void JobManager::UpdateCrfBounds(std::shared_ptr<BenchmarkJob>& job, float diff)
+{
    if (diff < 0.0f)
-   {
       job->crfMax = std::min(job->crfMax, job->currentCrf - 1);
-   }
    else if (diff > 0.0f)
-   {
       job->crfMin = std::max(job->crfMin, job->currentCrf + 1);
-   }
    else
    {
       job->crfMax = job->currentCrf;
       job->crfMin = job->currentCrf;
    }
+}
 
-   int nextCrf = job->currentCrf;
-
-   // Try interpolation if we have at least 2 data points
-   // Find the tightest bracket: highest CRF with VMAF >= target,
-   // lowest CRF with VMAF < target
-   int bracketLowCrf = -1;  // lower CRF  (higher quality side)
+int JobManager::CalculateNextCrf(const std::shared_ptr<BenchmarkJob>& job, float target, float diff)
+{
+   int bracketLowCrf = -1;
+   int bracketHighCrf = -1;
    float bracketLowVmaf = 0.0f;
-   int bracketHighCrf = -1; // higher CRF (lower quality side)
    float bracketHighVmaf = 0.0f;
 
-   for (size_t i = 0; i < job->testedCrfs.size(); ++i)
+   for (const auto& result : job->testHistory)
    {
-      int c = job->testedCrfs[i];
-      float v = job->testedVmafs[i];
+      auto c = result.crf;
+      auto v = result.vmaf;
 
       if (v >= target)
       {
-         // This CRF meets the target — want the highest such CRF
          if (bracketLowCrf < 0 || c > bracketLowCrf)
          {
-            bracketLowCrf = c;
-            bracketLowVmaf = v;
+            bracketLowCrf = c; bracketLowVmaf = v;
          }
       }
       else
       {
-         // This CRF is below target — want the lowest such CRF
          if (bracketHighCrf < 0 || c < bracketHighCrf)
          {
-            bracketHighCrf = c;
-            bracketHighVmaf = v;
+            bracketHighCrf = c; bracketHighVmaf = v;
          }
       }
    }
 
    if (bracketLowCrf >= 0 && bracketHighCrf >= 0)
    {
-      // We have a bracket — interpolate (secant method)
-      float slope = (bracketLowVmaf - bracketHighVmaf) /
-         static_cast<float>(bracketLowCrf - bracketHighCrf);
-
+      float slope = (bracketLowVmaf - bracketHighVmaf) / static_cast<float>(bracketLowCrf - bracketHighCrf);
       if (std::abs(slope) > 0.001f)
-      {
-         float estimate = bracketLowCrf +
-            (target - bracketLowVmaf) / slope;
-         nextCrf = static_cast<int>(std::round(estimate));
-      }
-      else
-      {
-         // Flat slope — bisect the bracket
-         nextCrf = (bracketLowCrf + bracketHighCrf) / 2;
-      }
+         return static_cast<int>(std::round(bracketLowCrf + (target - bracketLowVmaf) / slope));
+
+      return (bracketLowCrf + bracketHighCrf) / 2;
+   }
+
+   // No bracket fallback
+   float multiplier = (job->profile.codec == "libsvtav1") ? 3.0f : 2.5f;
+   int crfDelta = static_cast<int>(std::round(diff * multiplier));
+
+   // C++17 clamp replaces the manual maxDelta clamping
+   crfDelta = std::clamp(crfDelta, -8, 8);
+   if (crfDelta == 0) crfDelta = (diff > 0) ? 1 : -1;
+
+   return job->currentCrf + crfDelta;
+}
+
+void JobManager::FinalizeSearch(std::shared_ptr<BenchmarkJob>& job)
+{
+   job->searchActive = false;
+   job->isComplete = true;
+   job->state = JobState::DONE;
+
+   auto calcDiff = [](const auto& j) {
+      return j->finalVMAF - j->profile.targetVmaf;
+   };
+
+   auto completed_jobs = m_jobs | std::views::filter([&](const auto& other) {
+      return other->jobId == job->jobId && other->state == JobState::DONE;
+   });
+
+   for (auto& other : completed_jobs)
+   {
+      other->isRecommended = false;
+   }
+
+   auto candidates = completed_jobs | std::views::filter([&](const auto& other) {
+      return calcDiff(other) >= 0.0f;
+   });
+
+   auto it = std::ranges::max_element(candidates, std::less{}, [](const auto& other) {
+      return other->currentCrf;
+   });
+
+   if (it != candidates.end())
+   {
+      (*it)->isRecommended = true;
    }
    else
    {
-      // No bracket yet — use a conservative initial step
-      // AV1 CRF range is wider (0-63) so use a slightly larger
-      // multiplier than x264/x265
-      float multiplier = 2.5f;
-      if (job->profile.codec == "libsvtav1")
-         multiplier = 3.0f;
-
-      int crfDelta = static_cast<int>(std::round(diff * multiplier));
-
-      int maxDelta = 8;
-      if (crfDelta > maxDelta)
-         crfDelta = maxDelta;
-      if (crfDelta < -maxDelta)
-         crfDelta = -maxDelta;
-      if (crfDelta == 0)
-         crfDelta = (diff > 0) ? 1 : -1;
-
-      nextCrf = job->currentCrf + crfDelta;
+      if (auto fallback_it = std::ranges::max_element(completed_jobs, std::less{}, calcDiff);
+          fallback_it != completed_jobs.end())
+      {
+         (*fallback_it)->isRecommended = true;
+      }
    }
 
-   if (nextCrf < job->crfMin)
-      nextCrf = job->crfMin;
-   if (nextCrf > job->crfMax)
-      nextCrf = job->crfMax;
+   for (auto& other : m_jobs)
+   {
+      if (other->jobId == job->jobId)
+         other->segmentCache.reset();
+   }
 
-   bool alreadyTested = std::find(job->testedCrfs.begin(), job->testedCrfs.end(), nextCrf) != job->testedCrfs.end();
+   std::error_code ec;
+   std::filesystem::remove(job->outputFile, ec);
+}
+
+void JobManager::SpawnNextIteration(std::shared_ptr<BenchmarkJob>& job, int nextCrf)
+{
+   // Setup the next iteration job with the same parameters but updated CRF and iteration count
+   auto nextJob = std::make_shared<BenchmarkJob>();
+   nextJob->jobId = job->jobId;
+   nextJob->id = job->id;
+   nextJob->profile = job->profile;
+   nextJob->searchActive = true;
+   nextJob->currentCrf = nextCrf;
+   nextJob->crfMin = job->crfMin;
+   nextJob->crfMax = job->crfMax;
+   nextJob->iteration = job->iteration + 1;
+
+   nextJob->testHistory = job->testHistory;
+   //nextJob->testedCrfs = job->testedCrfs;
+   //nextJob->testedCrfs.push_back(nextCrf);
+   //nextJob->testedVmafs = job->testedVmafs;
+
+   nextJob->segmentDuration = job->segmentDuration;
+   nextJob->segmentStartTimes = job->segmentStartTimes;
+   nextJob->state = JobState::INIT;
+   nextJob->runner = std::make_unique<FFmpegRunner>();
+   nextJob->sourceFile = job->sourceFile;
+   nextJob->sourceMeta = job->sourceMeta;
+   nextJob->segmentCache = job->segmentCache;
+   nextJob->segmentsReady = true;
+
+   // Add the next iteration job to the pending jobs queue
+   m_pendingJobs.push_back(nextJob);
+
+   // Clear the old job
+   job->searchActive = false;
+   job->isComplete = true;
+   job->state = JobState::DONE;
+}
+
+void JobManager::HandleEarlyExit(std::shared_ptr<BenchmarkJob>& job)
+{
+   job->isComplete = true;
+   job->state = JobState::DONE;
+
+   if (!job->searchActive)
+      job->isRecommended = true;
+
+   std::error_code ec;
+   std::filesystem::remove(job->outputFile, ec);
+}
+
+void JobManager::ProcessCheckScore(std::shared_ptr<BenchmarkJob>& job)
+{
+   if (job->segmentVMAFs.empty() || !job->searchActive)
+   {
+      HandleEarlyExit(job);
+      return;
+   }
+
+   UpdateJobMetrics(job);
+
+   float target = static_cast<float>(job->profile.targetVmaf);
+   float diff = job->finalVMAF - target;
+   job->testHistory.push_back({job->currentCrf, job->finalVMAF});
+   //job->testedVmafs.push_back(job->finalVMAF);
+
+   UpdateCrfBounds(job, diff);
+
+   int nextCrf = CalculateNextCrf(job, target, diff);
+   nextCrf = std::clamp(nextCrf, job->crfMin, job->crfMax); // C++17 clamp replaces manual min/max bounds
+
+   bool alreadyTested = std::ranges::find(job->testHistory, nextCrf, &CrfTestResult::crf) != job->testHistory.end();
+   //bool alreadyTested = std::ranges::find(job->testedCrfs, nextCrf) != job->testedCrfs.end(); // C++20 ranges
    bool targetHit = (diff >= 0.0f && diff <= 0.2f);
 
-   if (targetHit || job->crfMin > job->crfMax || alreadyTested ||
-       nextCrf == job->currentCrf)
+   if (targetHit || job->crfMin > job->crfMax || alreadyTested || nextCrf == job->currentCrf)
    {
-      job->searchActive = false;
-      job->isComplete = true;
-      job->state = JobState::DONE;
-
-      std::shared_ptr<BenchmarkJob> bestJob = nullptr;
-      float bestDiff = -9999.0f;
-
-      for (auto& other : m_jobs)
-      {
-         if (other->jobId == job->jobId && other->state == JobState::DONE)
-         {
-            other->isRecommended = false;
-
-            float diff = other->finalVMAF - other->profile.targetVmaf;
-            if (diff >= 0.0f)
-            {
-               if (!bestJob || other->currentCrf > bestJob->currentCrf)
-               {
-                  bestJob = other;
-               }
-            }
-         }
-      }
-
-      if (!bestJob)
-      {
-         for (auto& other : m_jobs)
-         {
-            if (other->jobId == job->jobId && other->state == JobState::DONE)
-            {
-               float diff = other->finalVMAF - other->profile.targetVmaf;
-               if (!bestJob || diff > bestDiff)
-               {
-                  bestJob = other;
-                  bestDiff = diff;
-               }
-            }
-         }
-      }
-
-      if (bestJob)
-      {
-         bestJob->isRecommended = true;
-      }
-
-      // Clear the segment cache for all iterations of this job now that the search is done.
-      // This triggers the RAII cleanup of the temp_ref files immediately.
-      for (auto& other : m_jobs)
-      {
-         if (other->jobId == job->jobId)
-            other->segmentCache.reset();
-      }
-
-      std::error_code ec;
-      std::filesystem::remove(job->outputFile, ec);
+      FinalizeSearch(job);
    }
    else
    {
-      auto nextJob = std::make_shared<BenchmarkJob>();
-      nextJob->jobId = job->jobId;
-      nextJob->id = job->id;
-      nextJob->profile = job->profile;
-      nextJob->searchActive = true;
-      nextJob->currentCrf = nextCrf;
-      nextJob->crfMin = job->crfMin;
-      nextJob->crfMax = job->crfMax;
-      nextJob->iteration = job->iteration + 1;
-      nextJob->testedCrfs = job->testedCrfs;
-      nextJob->testedCrfs.push_back(nextCrf);
-      nextJob->testedVmafs = job->testedVmafs;
-      nextJob->segmentDuration = job->segmentDuration;
-      nextJob->segmentStartTimes = job->segmentStartTimes;
-      nextJob->state = JobState::INIT;
-      nextJob->runner = std::make_unique<FFmpegRunner>();
-      nextJob->sourceFile = job->sourceFile;
-      nextJob->sourceMeta = job->sourceMeta;
-
-      // Share the pre-extracted segment cache with the next iteration
-      nextJob->segmentCache = job->segmentCache;
-      nextJob->segmentsReady = true;
-
-      job->searchActive = false;
-      job->isComplete = true;
-      job->state = JobState::DONE;
-
-      m_pendingJobs.push_back(nextJob);
+      SpawnNextIteration(job, nextCrf);
    }
 }
 

@@ -34,7 +34,7 @@ struct EncodeProfile
 // Files are automatically cleaned up when the last iteration is destroyed.
 struct SegmentCache
 {
-   std::vector<std::string> refSegFiles;
+   std::vector<std::filesystem::path> refSegFiles;
 
    ~SegmentCache()
    {
@@ -54,12 +54,18 @@ enum class JobState
    DONE
 };
 
+struct CrfTestResult
+{
+   int crf = -1;
+   float vmaf = 0.0f;
+};
+
 struct BenchmarkJob
 {
    int jobId = 0;
    std::string id;
    EncodeProfile profile;
-   std::string outputFile;
+   std::filesystem::path outputFile;
    std::unique_ptr<FFmpegRunner> runner;
    bool isComplete = false;
    bool isCanceled = false;
@@ -91,12 +97,11 @@ struct BenchmarkJob
    bool segmentsReady = false;
 
    // Source state capture
-   std::string sourceFile;
+   std::filesystem::path sourceFile;
    VideoMetadata sourceMeta;
 
    // Search History
-   std::vector<int> testedCrfs;
-   std::vector<float> testedVmafs;
+   std::vector<CrfTestResult> testHistory;
 };
 
 class JobManager
@@ -109,7 +114,7 @@ public:
    void Update();
 
    // Enqueue a new benchmark task
-   void AddJob(const std::string& sourceFile, const VideoMetadata& sourceMeta,
+   void AddJob(const std::filesystem::path& sourceFile, const VideoMetadata& sourceMeta,
                const EncodeProfile& profile, int segmentCount,
                float segmentDuration);
 
@@ -128,13 +133,22 @@ public:
    }
 
 private:
-   std::string GenerateTempFileName(const std::shared_ptr<BenchmarkJob>& job, std::string_view header, bool includeSegment);
+   std::filesystem::path GenerateTempFileName(const std::shared_ptr<BenchmarkJob>& job, std::string_view header, bool includeSegment);
    void ProcessInit(std::shared_ptr<BenchmarkJob>& job);
    void ProcessExtractingSegment(std::shared_ptr<BenchmarkJob>& job);
    void ProcessEncodingSegment(std::shared_ptr<BenchmarkJob>& job);
    void ProcessVmaffingSegment(std::shared_ptr<BenchmarkJob>& job);
-   void ProcessCheckScore(std::shared_ptr<BenchmarkJob>& job);
    void ProcessJob(std::shared_ptr<BenchmarkJob>& job);
+
+   void UpdateJobMetrics(std::shared_ptr<BenchmarkJob>& job);
+   void UpdateCrfBounds(std::shared_ptr<BenchmarkJob>& job, float diff);
+   int CalculateNextCrf(const std::shared_ptr<BenchmarkJob>& job, float target, float diff);
+   void FinalizeSearch(std::shared_ptr<BenchmarkJob>& job);
+   void SpawnNextIteration(std::shared_ptr<BenchmarkJob>& job, int nextCrf);
+   void HandleEarlyExit(std::shared_ptr<BenchmarkJob>& job);
+   void ProcessCheckScore(std::shared_ptr<BenchmarkJob>& job);
+
+   std::filesystem::path m_tempDir = "temp";
 
    std::vector<std::shared_ptr<BenchmarkJob>> m_jobs;
    std::vector<std::shared_ptr<BenchmarkJob>> m_pendingJobs;

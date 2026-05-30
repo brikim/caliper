@@ -363,9 +363,9 @@ void UIManager::SaveProfiles()
    m_profilesDirty = false;
 }
 
-std::string UIManager::OpenFileDialog()
+std::filesystem::path UIManager::OpenFileDialog()
 {
-   std::string result = "";
+   std::filesystem::path result;
 #ifdef _WIN32
    std::array<char, MAX_PATH> filename = {0};
    OPENFILENAMEA ofn;
@@ -460,7 +460,6 @@ void UIManager::DrawInputSection()
    // 4. Draw the text
    if (m_ffmpegVersion.has_value())
    {
-      ImGui::AlignTextToFramePadding();
       ImGui::TextDisabled("%s", versionText.c_str());
    }
    else
@@ -470,7 +469,7 @@ void UIManager::DrawInputSection()
 
    if (ImGui::Button("Browse...", UI_BUTTON_SIZE))
    {
-      std::string selected = OpenFileDialog();
+      auto selected = OpenFileDialog();
       if (!selected.empty())
       {
          m_referenceVideo = selected;
@@ -480,19 +479,31 @@ void UIManager::DrawInputSection()
       }
    }
    ImGui::SameLine();
-   ImGui::SetNextItemWidth(-FLT_MIN);
-   ImGui::InputText("##ReferenceVideo", &m_referenceVideo, ImGuiInputTextFlags_ReadOnly);
+   // Center the next item vertically relative to the button
+   float buttonHeight = ImGui::GetItemRectSize().y; // Gets the height of the Button
+   float inputHeight = ImGui::GetFrameHeight();     // Gets the standard height of InputText
 
-   if (m_referenceMeta.valid)
+   if (buttonHeight > inputHeight)
    {
-      std::chrono::seconds total_duration{static_cast<int>(m_referenceMeta.duration)};
+      float offsetY = (buttonHeight - inputHeight) * 0.5f;
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + offsetY);
+   }
+   ImGui::SetNextItemWidth(-FLT_MIN);
+
+   auto videoString = m_referenceVideo.empty() ? "No video selected" : m_referenceVideo.filename().string();
+   ImGui::InputText("##ReferenceVideo", &videoString, ImGuiInputTextFlags_ReadOnly);
+
+   if (m_referenceMeta)
+   {
+      const auto& meta = m_referenceMeta.value();
+      std::chrono::seconds total_duration{static_cast<int>(meta.duration)};
       std::chrono::hh_mm_ss hms{total_duration};
 
       ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f),
                          "Codec: %s | %dx%d | %.2f fps | %d-bit | %02d:%02d:%02lld",
-                         m_referenceMeta.codec.c_str(), m_referenceMeta.width,
-                         m_referenceMeta.height, m_referenceMeta.framerate,
-                         m_referenceMeta.bit_depth, hms.hours().count(),
+                         meta.codec.c_str(), meta.width,
+                         meta.height, meta.framerate,
+                         meta.bit_depth, hms.hours().count(),
                          hms.minutes().count(), hms.seconds().count());
    }
    else if (!m_referenceVideo.empty())
@@ -811,7 +822,7 @@ void UIManager::DrawJobQueue()
       if (!job->isComplete)
          anyRunning = true;
 
-   bool canEnqueue = !m_referenceVideo.empty() && m_referenceMeta.valid;
+   bool canEnqueue = !m_referenceVideo.empty() && m_referenceMeta.has_value();
    if (!canEnqueue)
       ImGui::BeginDisabled();
    if (ImGui::Button("Enqueue Job", UI_BUTTON_SIZE))
@@ -819,7 +830,7 @@ void UIManager::DrawJobQueue()
       if (m_activeProfileIdx >= 0 && m_activeProfileIdx < m_profiles.size())
       {
          const auto& p = m_profiles[m_activeProfileIdx];
-         m_jobManager.get().AddJob(m_referenceVideo, m_referenceMeta, p, p.segmentCount,
+         m_jobManager.get().AddJob(m_referenceVideo, m_referenceMeta.value(), p, p.segmentCount,
                                    p.segmentDuration);
       }
    }

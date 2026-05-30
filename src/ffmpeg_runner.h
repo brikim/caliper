@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -27,7 +28,6 @@ struct VideoMetadata
    int height = 0;
    float duration = 0.0f;
    float framerate = 0.0f;
-   bool valid = false;
 };
 
 class FFmpegRunner
@@ -64,7 +64,7 @@ public:
    float GetVMAFScore() const;
 
    // Fetch video metadata synchronously using ffprobe
-   VideoMetadata GetMetadata(const std::string& filepath);
+   std::optional<VideoMetadata> GetMetadata(const std::filesystem::path& filepath);
 
    // Returns the version string, or throws/returns empty if not found
    std::optional<std::string> GetFFmpegVersion();
